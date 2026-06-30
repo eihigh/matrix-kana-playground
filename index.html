@@ -10,6 +10,7 @@
     --text:#e6e9ef; --muted:#9aa3b2; --accent:#5aa9e6; --accent2:#7ee787;
     --warn:#e6a45a; --sfb:#e65a7e; --inroll:#7ee787; --outroll:#5aa9e6;
     --single:#3a2f4a; --cell:#222732; --cellhover:#2d3442;
+    --repeat:#e8c95a; --sep:#8aa3c9;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
@@ -38,14 +39,19 @@
     min-height:34px;display:flex;align-items:center;justify-content:center;
     cursor:grab;font-size:16px;position:relative;transition:background .08s}
   .slot.empty{background:#181c24;color:#3a414f}
-  .slot.sfb{background:rgba(230,90,126,.24);border-color:rgba(230,90,126,.55)}
   .slot.homehome{background:rgba(126,231,135,.18);border-color:rgba(126,231,135,.45)}
+  .slot.sfb{background:rgba(230,90,126,.24);border-color:rgba(230,90,126,.55)}
+  .slot.repeat{background:rgba(232,201,90,.24);border-color:rgba(232,201,90,.6)}
   .slot:hover{background:var(--cellhover)}
   .slot.dragover{outline:2px solid var(--accent);outline-offset:-2px}
-  .slot.invalid{cursor:not-allowed;background:#0d1015;border-color:#191d26;color:#252a34;
-    background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.022) 4px,rgba(255,255,255,.022) 8px)}
-  .slot.invalid:hover{background:#0d1015;
-    background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.022) 4px,rgba(255,255,255,.022) 8px)}
+  /* 無効セル(F/J/K行)は色ルールはそのまま適用し、斜線ハッチを重ねて無効を示す */
+  .slot.invalid{cursor:not-allowed}
+  .slot.invalid::after{content:'';position:absolute;inset:0;border-radius:6px;pointer-events:none;
+    background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(0,0,0,.34) 4px,rgba(0,0,0,.34) 8px)}
+  /* 左右の手の境界(4象限)セパレータ */
+  .sep-l{box-shadow:inset 3px 0 0 var(--sep)}
+  .sep-t{box-shadow:inset 0 3px 0 var(--sep)}
+  .sep-l.sep-t{box-shadow:inset 3px 0 0 var(--sep),inset 0 3px 0 var(--sep)}
   .rhead.single{opacity:.4}
   .slot .seq{position:absolute;bottom:1px;right:3px;font-size:8px;color:#5c6577}
   .swatch{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:3px}
@@ -100,9 +106,11 @@
       </div>
       <div id="grid" class="grid"></div>
       <div class="note">
-        <span class="swatch" style="background:rgba(230,90,126,.55)"></span>SFB（同指で別キーを連打する位置）
-        <span class="swatch" style="background:rgba(126,231,135,.5)"></span>ホーム段同士の組み合わせ
-        <span class="swatch" style="background-image:repeating-linear-gradient(45deg,#0d1015,#0d1015 2px,#2a2f3a 2px,#2a2f3a 4px)"></span>無効（F/J/K は単打キーのため第1キーにならない）
+        <span class="swatch" style="background:rgba(230,90,126,.55)"></span>SFB（同指で別キーを連打）
+        <span class="swatch" style="background:rgba(126,231,135,.5)"></span>ホーム段同士
+        <span class="swatch" style="background:rgba(232,201,90,.6)"></span>対角線（同キー連打＝同指）
+        <span class="swatch" style="background-image:repeating-linear-gradient(45deg,#1a1f2a,#1a1f2a 2px,#000 2px,#000 4px)"></span>無効（F/J/K は第1キーにならない）
+        <span class="swatch" style="background:var(--sep)"></span>左右の手の境界（4象限）
         　— 色はかなの中身に依らないキー組の性質です。
       </div>
 
@@ -355,9 +363,18 @@ function makeSlot(id, kana, extraClass){
 // 上段キー。マスの色分け(かなに依らずキー組の性質)に使う。
 const TOP_KEYS = new Set(['W','E','R','U','I','O']);
 function cellClass(first, second){
-  if(KEYMAP[first].fid===KEYMAP[second].fid && first!==second) return 'sfb';      // 同指・別キー
+  if(first===second) return 'repeat';                                            // 対角線=同キー連打(同指)
+  if(KEYMAP[first].fid===KEYMAP[second].fid) return 'sfb';                        // 同指・別キー
   if(!TOP_KEYS.has(first) && !TOP_KEYS.has(second)) return 'homehome';            // ホーム段同士
   return '';
+}
+// 左右の手の境界(最初の右手キー)。ここで4象限に分けるセパレータを描く。
+const FIRST_RIGHT = SECOND_KEYS.find(k => KEYMAP[k].hand === 'R');
+function cellExtra(first, second){
+  let c = cellClass(first, second);
+  if(second === FIRST_RIGHT) c += ' sep-l';
+  if(first === FIRST_RIGHT) c += ' sep-t';
+  return c.trim();
 }
 
 function renderGrid(){
@@ -367,21 +384,21 @@ function renderGrid(){
   const corner = document.createElement('div'); corner.className='ghead'; corner.textContent='1\\2';
   gridEl.appendChild(corner);
   for(const s of SECOND_KEYS){
-    const h = document.createElement('div'); h.className='ghead'; h.textContent=s; gridEl.appendChild(h);
+    const h = document.createElement('div'); h.className='ghead'+(s===FIRST_RIGHT?' sep-l':''); h.textContent=s; gridEl.appendChild(h);
   }
   // 各行（14キー全てを行に出し、単打キー F/J/K の行は無効セルとして表示）
   for(const f of SECOND_KEYS){
     const single = SINGLE_KEYS.includes(f);
-    const rh = document.createElement('div'); rh.className='rhead'+(single?' single':''); rh.textContent=f; gridEl.appendChild(rh);
+    const rh = document.createElement('div'); rh.className='rhead'+(single?' single':'')+(f===FIRST_RIGHT?' sep-t':''); rh.textContent=f; gridEl.appendChild(rh);
     for(const s of SECOND_KEYS){
       if(single){
         const d = document.createElement('div');
-        d.className = 'slot invalid';
+        d.className = ('slot invalid ' + cellExtra(f,s)).trim();
         d.title = `${f} は単打キーのため第1キーになりません`;
         gridEl.appendChild(d);
       }else{
         const id = cellId(f,s);
-        gridEl.appendChild(makeSlot(id, layout[id], cellClass(f,s)));
+        gridEl.appendChild(makeSlot(id, layout[id], cellExtra(f,s)));
       }
     }
   }
