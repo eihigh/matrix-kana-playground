@@ -173,7 +173,8 @@ const KEYMAP = {
 };
 
 const SINGLE_KEYS = ['F','J','K'];                 // 単打キー（う・い・ん用）
-const SECOND_KEYS = ['W','E','R','A','S','D','F','U','I','O','J','K','L',';']; // 14
+// 表示順: 上段(WER / UIO)を両端、ホーム段(ASDF / JKL;)を中央に集めて見やすくする
+const SECOND_KEYS = ['W','E','R','A','S','D','F','J','K','L',';','U','I','O']; // 14
 const FIRST_KEYS  = SECOND_KEYS.filter(k=>!SINGLE_KEYS.includes(k));            // 11
 
 const FINGER_LABEL = {LP:'左小指',LR:'左薬指',LM:'左中指',LI:'左人差',RI:'右人差',RM:'右中指',RR:'右薬指',RP:'右小指'};
