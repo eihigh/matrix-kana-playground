@@ -4,3 +4,7 @@ optimize_state.json.tmp
 best_layout.json
 best_layout.json.tmp
 optimize_progress.csv
+
+# Python
+__pycache__/
+*.pyc
