@@ -42,6 +42,11 @@
   .slot.homehome{background:rgba(126,231,135,.18);border-color:rgba(126,231,135,.45)}
   .slot:hover{background:var(--cellhover)}
   .slot.dragover{outline:2px solid var(--accent);outline-offset:-2px}
+  .slot.invalid{cursor:not-allowed;background:#0d1015;border-color:#191d26;color:#252a34;
+    background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.022) 4px,rgba(255,255,255,.022) 8px)}
+  .slot.invalid:hover{background:#0d1015;
+    background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.022) 4px,rgba(255,255,255,.022) 8px)}
+  .rhead.single{opacity:.4}
   .slot .seq{position:absolute;bottom:1px;right:3px;font-size:8px;color:#5c6577}
   .swatch{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:3px}
   .singles{display:flex;gap:10px;margin-top:4px}
@@ -97,7 +102,8 @@
       <div class="note">
         <span class="swatch" style="background:rgba(230,90,126,.55)"></span>SFB（同指で別キーを連打する位置）
         <span class="swatch" style="background:rgba(126,231,135,.5)"></span>ホーム段同士の組み合わせ
-        　— かなの中身に依らない、キー組の性質です。
+        <span class="swatch" style="background-image:repeating-linear-gradient(45deg,#0d1015,#0d1015 2px,#2a2f3a 2px,#2a2f3a 4px)"></span>無効（F/J/K は単打キーのため第1キーにならない）
+        　— 色はかなの中身に依らないキー組の性質です。
       </div>
 
       <h2 style="margin-top:16px">単打（高頻度かな）</h2>
@@ -362,12 +368,20 @@ function renderGrid(){
   for(const s of SECOND_KEYS){
     const h = document.createElement('div'); h.className='ghead'; h.textContent=s; gridEl.appendChild(h);
   }
-  // 各行
-  for(const f of FIRST_KEYS){
-    const rh = document.createElement('div'); rh.className='rhead'; rh.textContent=f; gridEl.appendChild(rh);
+  // 各行（14キー全てを行に出し、単打キー F/J/K の行は無効セルとして表示）
+  for(const f of SECOND_KEYS){
+    const single = SINGLE_KEYS.includes(f);
+    const rh = document.createElement('div'); rh.className='rhead'+(single?' single':''); rh.textContent=f; gridEl.appendChild(rh);
     for(const s of SECOND_KEYS){
-      const id = cellId(f,s);
-      gridEl.appendChild(makeSlot(id, layout[id], cellClass(f,s)));
+      if(single){
+        const d = document.createElement('div');
+        d.className = 'slot invalid';
+        d.title = `${f} は単打キーのため第1キーになりません`;
+        gridEl.appendChild(d);
+      }else{
+        const id = cellId(f,s);
+        gridEl.appendChild(makeSlot(id, layout[id], cellClass(f,s)));
+      }
     }
   }
 }
@@ -510,7 +524,7 @@ function onDragStart(e){
 }
 function onDragOver(e){
   const slot = e.target.closest('.slot');
-  if(!slot) return;
+  if(!slot || slot.classList.contains('invalid')) return;
   e.preventDefault();
   e.dataTransfer.dropEffect='move';
   slot.classList.add('dragover');
@@ -521,7 +535,7 @@ function onDragLeave(e){
 }
 function onDrop(e){
   const slot = e.target.closest('.slot');
-  if(!slot) return;
+  if(!slot || slot.classList.contains('invalid')) return;
   e.preventDefault();
   slot.classList.remove('dragover');
   const tgt = slot.dataset.id;
