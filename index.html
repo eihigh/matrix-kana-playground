@@ -37,10 +37,13 @@
   .slot{background:var(--cell);border:1px solid var(--border);border-radius:6px;
     min-height:34px;display:flex;align-items:center;justify-content:center;
     cursor:grab;font-size:16px;position:relative;transition:background .08s}
-  .slot:hover{background:var(--cellhover)}
   .slot.empty{background:#181c24;color:#3a414f}
+  .slot.sfb{background:rgba(230,90,126,.24);border-color:rgba(230,90,126,.55)}
+  .slot.homehome{background:rgba(126,231,135,.18);border-color:rgba(126,231,135,.45)}
+  .slot:hover{background:var(--cellhover)}
   .slot.dragover{outline:2px solid var(--accent);outline-offset:-2px}
   .slot .seq{position:absolute;bottom:1px;right:3px;font-size:8px;color:#5c6577}
+  .swatch{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:3px}
   .singles{display:flex;gap:10px;margin-top:4px}
   .single-slot{background:var(--single);border:1px solid #4a3d5e;border-radius:8px;
     padding:8px 14px;display:flex;flex-direction:column;align-items:center;cursor:grab}
@@ -91,6 +94,11 @@
         <span class="hand-tag" style="margin-left:auto;align-self:center">行=第1キー / 列=第2キー</span>
       </div>
       <div id="grid" class="grid"></div>
+      <div class="note">
+        <span class="swatch" style="background:rgba(230,90,126,.55)"></span>SFB（同指で別キーを連打する位置）
+        <span class="swatch" style="background:rgba(126,231,135,.5)"></span>ホーム段同士の組み合わせ
+        　— かなの中身に依らない、キー組の性質です。
+      </div>
 
       <h2 style="margin-top:16px">単打（高頻度かな）</h2>
       <div id="singles" class="singles"></div>
@@ -337,6 +345,14 @@ function makeSlot(id, kana, extraClass){
   return d;
 }
 
+// 上段キー。マスの色分け(かなに依らずキー組の性質)に使う。
+const TOP_KEYS = new Set(['W','E','R','U','I','O']);
+function cellClass(first, second){
+  if(KEYMAP[first].fid===KEYMAP[second].fid && first!==second) return 'sfb';      // 同指・別キー
+  if(!TOP_KEYS.has(first) && !TOP_KEYS.has(second)) return 'homehome';            // ホーム段同士
+  return '';
+}
+
 function renderGrid(){
   gridEl.innerHTML='';
   gridEl.style.gridTemplateColumns = `26px repeat(${SECOND_KEYS.length}, minmax(34px,1fr))`;
@@ -351,7 +367,7 @@ function renderGrid(){
     const rh = document.createElement('div'); rh.className='rhead'; rh.textContent=f; gridEl.appendChild(rh);
     for(const s of SECOND_KEYS){
       const id = cellId(f,s);
-      gridEl.appendChild(makeSlot(id, layout[id]));
+      gridEl.appendChild(makeSlot(id, layout[id], cellClass(f,s)));
     }
   }
 }
