@@ -6,6 +6,11 @@
   - 上段(W E R / U I O)使用率の最小化
   - 指の effort 最小化(弱い指ほど重み大 → pinky < ring < middle/index の荷重順序を誘導)
   - SFB率(同一指で別キーを連打する割合)を上限以下に抑える制約(--sfb-limit, 既定1.0%)
+  - 連接の流れ評価:
+      * 1-gram(モーラ内2打): 同手ロールを高評価、repeat/alternateはやや低め
+      * 2-gram(モーラ間): ういん接続はロールを高評価、それ以外はalternationを高評価
+      * かな間repeat(KL→L; のような境界の同キー連打)は特別減点
+    (重み・ペナルティ表は CONFIG で調整可能)
 
 制約:
   - 単打キー F・J・K には う・い・ん の3つのみ配置(3キー間の入れ替えは可、行列側には出ない)
@@ -64,6 +69,18 @@ KEYMAP = {
     ";": ("R", "RP", "home"),
 }
 KEY_FID = {k: FID[v[1]] for k, v in KEYMAP.items()}
+KEY_HAND = {k: v[0] for k, v in KEYMAP.items()}
+
+
+def classify_pair(k1, k2):
+    """2キー連接のタイプ: repeat(同キー) / sfb(同指別キー) / roll(同手別指) / alt(逆手)。"""
+    if k1 == k2:
+        return "repeat"
+    if KEY_FID[k1] == KEY_FID[k2]:
+        return "sfb"
+    if KEY_HAND[k1] == KEY_HAND[k2]:
+        return "roll"
+    return "alt"
 
 SINGLE_KEYS = ["F", "J", "K"]
 SECOND_KEYS = ["W", "E", "R", "A", "S", "D", "F", "U", "I", "O", "J", "K", "L", ";"]
@@ -113,6 +130,17 @@ CONFIG = {
     # 指effort重み: 弱い指ほど大。pinky<ring<middle/index を誘導する。
     "finger_effort": {"LP": 3.0, "LR": 2.0, "LM": 1.0, "LI": 1.0,
                       "RI": 1.0, "RM": 1.0, "RR": 2.0, "RP": 3.0},
+
+    # --- 連接の「流れ」評価(ペナルティ。小さいほど高評価) ---
+    "w_flow_uni": 1.0,     # 1-gram(モーラ内の2打)の流れ評価の重み
+    "w_flow_bi": 1.0,      # 2-gram(モーラ間の境界連接)の流れ評価の重み
+    "uin": ["う", "い", "ん"],   # この単打かなが絡む境界は「ロール志向」で評価
+    # モーラ内(1-gram): 同手ロールを高評価、repeat/alternateはやや低め
+    "pen_uni": {"roll": 0.0, "repeat": 0.5, "alt": 0.5, "sfb": 1.0},
+    # モーラ間(2-gram) ういん接続: ロールを高評価
+    "pen_bi_uin": {"roll": 0.0, "alt": 0.5, "repeat": 2.0, "sfb": 1.0},
+    # モーラ間(2-gram) それ以外: alternationを高評価。repeat(かな間連打)は特別減点(2.0)
+    "pen_bi_other": {"alt": 0.0, "roll": 0.5, "repeat": 2.0, "sfb": 1.0},
     # EAパラメータ
     "pop_size": 120,
     "elite": 6,
@@ -129,20 +157,20 @@ CONFIG = {
 # 行列スロット(154) と 単打スロット(3) のプリコンピュート
 def build_slots():
     mat_slots = [f + s for f in FIRST_KEYS for s in SECOND_KEYS]
-    mat_fids, mat_top, mat_sfb, mat_keys = [], [], [], []
+    mat_fids, mat_top, mat_type, mat_keys = [], [], [], []
     for sid in mat_slots:
         keys = list(sid)  # 必ず2キー
         f0, f1 = KEY_FID[keys[0]], KEY_FID[keys[1]]
         mat_fids.append((f0, f1))
         mat_top.append(sum(1 for k in keys if KEYMAP[k][2] == "top"))
-        mat_sfb.append(f0 == f1 and keys[0] != keys[1])  # 同指・別キー=内部SFB
+        mat_type.append(classify_pair(keys[0], keys[1]))  # repeat/sfb/roll/alt
         mat_keys.append(keys)
 
     sgl_slots = list(SINGLE_KEYS)
     sgl_fid = [KEY_FID[k] for k in sgl_slots]
     sgl_top = [1 if KEYMAP[k][2] == "top" else 0 for k in sgl_slots]
     sgl_keys = [[k] for k in sgl_slots]
-    return (mat_slots, mat_fids, mat_top, mat_sfb, mat_keys,
+    return (mat_slots, mat_fids, mat_top, mat_type, mat_keys,
             sgl_slots, sgl_fid, sgl_top, sgl_keys)
 
 
@@ -168,7 +196,19 @@ def fitness(genome, cfg):
     sfb = 0.0
     mora_keys = {}
 
-    # 行列部: 指/段/effort と 2打モーラ内部バイグラム
+    pen_uni = cfg["pen_uni"]
+    pen_bi_uin = cfg["pen_bi_uin"]
+    pen_bi_other = cfg["pen_bi_other"]
+    uin = set(cfg["uin"])
+
+    flow_uni_sum = 0.0   # 1-gram(モーラ内)の流れペナルティ加重和
+    flow_uni_tot = 0.0
+    flow_bi_sum = 0.0    # 2-gram(モーラ間)の流れペナルティ加重和
+    flow_bi_tot = 0.0
+    uni_cnt = {"roll": 0.0, "alt": 0.0, "repeat": 0.0, "sfb": 0.0}
+    bi_cnt = {"roll": 0.0, "alt": 0.0, "repeat": 0.0, "sfb": 0.0}
+
+    # 行列部: 指/段/effort と 2打モーラ内部バイグラム(1-gram流れ)
     for i, tok in enumerate(mat):
         m = MAT_ITEMS[tok]
         if m is None:
@@ -183,8 +223,12 @@ def fitness(genome, cfg):
         finger[f0] += w
         finger[f1] += w
         total_bg += w               # 内部キー連接(1モーラ=1回)
-        if MAT_SFB[i]:
+        t = MAT_TYPE[i]
+        if t == "sfb":
             sfb += w
+        flow_uni_sum += w * pen_uni[t]
+        flow_uni_tot += w
+        uni_cnt[t] += w
 
     # 単打部: う・い・ん(1キー、ホーム行)
     for i, tok in enumerate(sgl):
@@ -197,7 +241,7 @@ def fitness(genome, cfg):
         top += w * SGL_TOP[i]
         finger[SGL_FID[i]] += w
 
-    # モーラ境界のキー連接(2-gram)
+    # モーラ境界のキー連接(2-gram流れ)
     for m1, m2, f in BIGRAM_LIST:
         k1 = mora_keys.get(m1)
         k2 = mora_keys.get(m2)
@@ -206,8 +250,13 @@ def fitness(genome, cfg):
         total_bg += f
         a = k1[-1]
         b = k2[0]
-        if KEY_FID[a] == KEY_FID[b] and a != b:
+        t = classify_pair(a, b)
+        if t == "sfb":
             sfb += f
+        pen = pen_bi_uin if (m1 in uin or m2 in uin) else pen_bi_other
+        flow_bi_sum += f * pen[t]
+        flow_bi_tot += f
+        bi_cnt[t] += f
 
     if total <= 0 or total_bg <= 0:
         return 1e9, {}
@@ -226,17 +275,29 @@ def fitness(genome, cfg):
                  + hand_pen(loads[FID["RP"]], loads[FID["RR"]], loads[FID["RM"]], loads[FID["RI"]]))
 
     sfb_over = max(0.0, sfb_rate - cfg["sfb_limit"])
+    flow_uni = flow_uni_sum / flow_uni_tot if flow_uni_tot > 0 else 0.0
+    flow_bi = flow_bi_sum / flow_bi_tot if flow_bi_tot > 0 else 0.0
 
     cost = (cfg["w_top"] * top_ratio
             + cfg["w_effort"] * effort
             + cfg["w_order"] * order_pen
-            + cfg["w_sfb_over"] * sfb_over)
+            + cfg["w_sfb_over"] * sfb_over
+            + cfg["w_flow_uni"] * flow_uni
+            + cfg["w_flow_bi"] * flow_bi)
+
+    def rates(cnt, tot):
+        return {k: (v / tot if tot > 0 else 0.0) for k, v in cnt.items()}
+
     comp = {
         "cost": cost,
         "top_ratio": top_ratio,
         "effort": effort,
         "order_pen": order_pen,
         "sfb_rate": sfb_rate,
+        "flow_uni": flow_uni,
+        "flow_bi": flow_bi,
+        "uni": rates(uni_cnt, flow_uni_tot),
+        "bi": rates(bi_cnt, flow_bi_tot),
         "loads": {FINGER_ORDER[i]: loads[i] for i in range(8)},
     }
     return cost, comp
@@ -375,6 +436,10 @@ def export_best(best_genome, best_comp, generation, cfg):
             "sfb_rate": best_comp.get("sfb_rate"),
             "sfb_limit": cfg["sfb_limit"],
             "effort": best_comp.get("effort"),
+            "flow_uni": best_comp.get("flow_uni"),
+            "flow_bi": best_comp.get("flow_bi"),
+            "uni_rates": best_comp.get("uni"),
+            "bi_rates": best_comp.get("bi"),
             "loads": best_comp.get("loads"),
             "note": "playgroundの『インポート』に読み込める形式(_metaは無視される)",
         },
@@ -386,17 +451,25 @@ def export_best(best_genome, best_comp, generation, cfg):
 def append_progress(generation, best_comp, elapsed):
     new = not os.path.exists(PROGRESS_PATH)
     loads = best_comp.get("loads", {})
+    uni = best_comp.get("uni", {})
+    bi = best_comp.get("bi", {})
     with open(PROGRESS_PATH, "a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if new:
-            w.writerow(["generation", "cost", "top_ratio", "sfb_rate", "effort", "order_pen",
+            w.writerow(["generation", "cost", "top_ratio", "sfb_rate", "effort",
+                        "flow_uni", "flow_bi",
+                        "uni_roll", "uni_alt", "uni_repeat",
+                        "bi_roll", "bi_alt", "bi_repeat",
                         *FINGER_ORDER, "elapsed_sec"])
         w.writerow([generation,
                     f"{best_comp['cost']:.6f}",
                     f"{best_comp['top_ratio']:.6f}",
                     f"{best_comp['sfb_rate']:.6f}",
                     f"{best_comp['effort']:.6f}",
-                    f"{best_comp['order_pen']:.6f}",
+                    f"{best_comp['flow_uni']:.6f}",
+                    f"{best_comp['flow_bi']:.6f}",
+                    f"{uni.get('roll', 0):.4f}", f"{uni.get('alt', 0):.4f}", f"{uni.get('repeat', 0):.4f}",
+                    f"{bi.get('roll', 0):.4f}", f"{bi.get('alt', 0):.4f}", f"{bi.get('repeat', 0):.4f}",
                     *[f"{loads.get(fk, 0):.4f}" for fk in FINGER_ORDER],
                     f"{elapsed:.1f}"])
 
@@ -412,7 +485,7 @@ def handle_signal(signum, frame):
 
 
 def main():
-    global MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_SFB, MAT_KEYS
+    global MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_TYPE, MAT_KEYS
     global SGL_SLOTS, SGL_FID, SGL_TOP, SGL_KEYS
     global MAT_ITEMS, MAT_W, SGL_ITEMS, SGL_W, BIGRAM_LIST
 
@@ -431,7 +504,7 @@ def main():
         m1, m2 = key.split("\t")
         BIGRAM_LIST.append((m1, m2, float(fr)))
 
-    (MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_SFB, MAT_KEYS,
+    (MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_TYPE, MAT_KEYS,
      SGL_SLOTS, SGL_FID, SGL_TOP, SGL_KEYS) = build_slots()
     MAT_ITEMS, MAT_W, SGL_ITEMS, SGL_W = build_items(unigram)
 
@@ -530,10 +603,13 @@ def main():
 
         if generation % 20 == 0 or generation == 1:
             ld = best_comp["loads"]
-            print(f"gen {generation:6d} | cost {best_cost:.5f} | top {best_comp['top_ratio']*100:5.2f}% "
+            u = best_comp["uni"]
+            bg = best_comp["bi"]
+            print(f"gen {generation:6d} | cost {best_cost:.4f} | top {best_comp['top_ratio']*100:4.1f}% "
                   f"| SFB {best_comp['sfb_rate']*100:4.2f}% "
-                  f"| LP {ld['LP']*100:4.1f} LR {ld['LR']*100:4.1f} LM {ld['LM']*100:4.1f} LI {ld['LI']*100:4.1f} "
-                  f"/ RI {ld['RI']*100:4.1f} RM {ld['RM']*100:4.1f} RR {ld['RR']*100:4.1f} RP {ld['RP']*100:4.1f}")
+                  f"| uni roll {u['roll']*100:4.1f}% | bi roll/alt/rep {bg['roll']*100:4.1f}/{bg['alt']*100:4.1f}/{bg['repeat']*100:4.2f}% "
+                  f"| L {ld['LP']*100:3.0f}/{ld['LR']*100:3.0f}/{ld['LM']*100:3.0f}/{ld['LI']*100:3.0f} "
+                  f"R {ld['RI']*100:3.0f}/{ld['RM']*100:3.0f}/{ld['RR']*100:3.0f}/{ld['RP']*100:3.0f}")
 
     save_checkpoint(generation, population, best_genome, best_cost, best_comp, rng, cfg)
     export_best(best_genome, best_comp, generation, cfg)
