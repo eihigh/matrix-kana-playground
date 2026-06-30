@@ -245,7 +245,7 @@ function buildReverseMap(){
   const map = {}; // kana -> [keys]
   for(const id in layout){
     const kana = layout[id];
-    if(!kana) continue;
+    if(typeof kana !== 'string' || !kana) continue; // _meta 等のメタ情報は無視
     map[kana] = id.split('');
   }
   return map;

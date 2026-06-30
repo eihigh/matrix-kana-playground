@@ -1,0 +1,6 @@
+# 進化的アルゴリズムの実行時生成物(チェックポイント・進捗・結果)
+optimize_state.json
+optimize_state.json.tmp
+best_layout.json
+best_layout.json.tmp
+optimize_progress.csv
