@@ -42,6 +42,8 @@
   .slot.homehome{background:rgba(126,231,135,.18);border-color:rgba(126,231,135,.45)}
   .slot.sfb{background:rgba(230,90,126,.24);border-color:rgba(230,90,126,.55)}
   .slot.repeat{background:rgba(232,201,90,.24);border-color:rgba(232,201,90,.6)}
+  /* レアかな(ぬより低頻度)は文字を灰色にして、移動調整しやすいことを示す */
+  .slot.rare{color:var(--muted)}
   .slot:hover{background:var(--cellhover)}
   .slot.dragover{outline:2px solid var(--accent);outline-offset:-2px}
   /* 無効セル(F/J/K行)は色ルールはそのまま適用し、斜線ハッチを重ねて無効を示す */
@@ -354,7 +356,7 @@ const singlesEl = document.getElementById('singles');
 
 function makeSlot(id, kana, extraClass){
   const d = document.createElement('div');
-  d.className = 'slot' + (kana? '' : ' empty') + (extraClass? ' '+extraClass : '');
+  d.className = 'slot' + (kana? '' : ' empty') + (kana && RARE_KANA.has(kana)? ' rare' : '') + (extraClass? ' '+extraClass : '');
   d.dataset.id = id;
   d.draggable = true;
   d.textContent = kana || '·';
@@ -427,6 +429,13 @@ function fmt(n,d){ return d? (100*n/d).toFixed(1)+'%' : '–'; }
 
 // 埋め込みN-gramデータ（薙刀式・kouy 100万字統計より、モーラ単位に再構成）
 const NGRAM = JSON.parse(document.getElementById('ngramData').textContent);
+
+// レアかな判定: N-gram頻度が「ぬ」より低いモーラ。頻度データに無いものも含めてレア扱い。
+// レアなかなは出現がまれで、レイアウト上の移動調整が比較的しやすいため灰色表示する。
+const RARE_THRESHOLD = NGRAM.unigram['ぬ'] || 0;
+const RARE_KANA = new Set(
+  KANA_LIST.filter(k => (NGRAM.unigram[k] || 0) < RARE_THRESHOLD)
+);
 
 function currentMode(){
   const r = document.querySelector('input[name="srcmode"]:checked');
