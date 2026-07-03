@@ -46,6 +46,15 @@
   .slot.rare{color:var(--muted)}
   .slot:hover{background:var(--cellhover)}
   .slot.dragover{outline:2px solid var(--accent);outline-offset:-2px}
+  /* 選択/ドラッグ中の対象セル */
+  .slot.active-src{box-shadow:0 0 0 3px var(--repeat);z-index:3}
+  /* bigram隣接文字top5のハイライト(rankで発光の強さを変える) */
+  .slot.neighbor{box-shadow:0 0 0 2px var(--accent),0 0 10px rgba(90,169,230,.55);z-index:2}
+  .slot.neighbor.n1{box-shadow:0 0 0 2px var(--accent2),0 0 14px rgba(126,231,135,.75)}
+  .slot.neighbor.n2{box-shadow:0 0 0 2px var(--accent2),0 0 11px rgba(126,231,135,.55)}
+  .slot .nbadge{position:absolute;top:1px;left:2px;font-size:8px;font-weight:700;
+    color:#0f1115;background:var(--accent);border-radius:3px;padding:0 3px;line-height:1.45;pointer-events:none}
+  .slot.neighbor.n1 .nbadge,.slot.neighbor.n2 .nbadge{background:var(--accent2)}
   /* 無効セル(F/J/K行)は色ルールはそのまま適用し、斜線ハッチを重ねて無効を示す */
   .slot.invalid{cursor:not-allowed}
   .slot.invalid::after{content:'';position:absolute;inset:0;border-radius:6px;pointer-events:none;
@@ -114,6 +123,10 @@
         <span class="swatch" style="background-image:repeating-linear-gradient(45deg,#1a1f2a,#1a1f2a 2px,#000 2px,#000 4px)"></span>無効（F/J/K は第1キーにならない）
         <span class="swatch" style="background:var(--sep)"></span>左右の手の境界（4象限）
         　— 色はかなの中身に依らないキー組の性質です。
+      </div>
+      <div class="note">
+        マスをクリックで選択、またはドラッグ中に、その文字と隣り合う頻度が高い
+        <b>bigram隣接top5</b> を発光でハイライトします（数字はランク。再クリックで選択解除）。
       </div>
 
       <h2 style="margin-top:16px">単打（高頻度かな）</h2>
@@ -542,17 +555,74 @@ function renderAll(){
   renderGrid();
   renderSingles();
   renderMetrics();
+  applyActiveHighlight();
+}
+
+/* ---------- bigram隣接文字ハイライト ---------- */
+let selectedId = null;   // クリックで選択中のセル
+let dragSrcId  = null;   // ドラッグ中のセル
+
+// 指定かなと隣り合う頻度が高い上位n文字を bigram 頻度表から集計（前後どちらも合算）
+function topBigramNeighbors(kana, n=5){
+  if(!kana) return [];
+  const agg = {};
+  const bg = NGRAM.bigram;
+  for(const key in bg){
+    const t = key.split('\t');
+    let other = null;
+    if(t[0] === kana) other = t[1];
+    else if(t[1] === kana) other = t[0];
+    else continue;
+    if(!other || other === kana) continue;
+    agg[other] = (agg[other] || 0) + bg[key];
+  }
+  return Object.entries(agg).sort((a,b)=>b[1]-a[1]).slice(0, n).map(e=>e[0]);
+}
+
+function slotById(id){
+  return document.querySelector(`.slot[data-id="${CSS.escape(id)}"]`);
+}
+
+function clearHighlights(){
+  for(const el of document.querySelectorAll('.slot.neighbor, .slot.active-src')){
+    el.classList.remove('neighbor','active-src','n1','n2','n3','n4','n5');
+    const b = el.querySelector('.nbadge'); if(b) b.remove();
+  }
+}
+
+// 現在アクティブなセル(ドラッグ優先、無ければ選択中)の隣接top5をハイライト
+function applyActiveHighlight(){
+  clearHighlights();
+  const id = dragSrcId || selectedId;
+  if(!id) return;
+  const kana = layout[id];
+  const src = slotById(id);
+  if(src) src.classList.add('active-src');
+  const rev = buildReverseMap();
+  topBigramNeighbors(kana, 5).forEach((nk, idx)=>{
+    const ks = rev[nk]; if(!ks) return;
+    const el = slotById(ks.join(''));
+    if(!el) return;
+    el.classList.add('neighbor', 'n'+(idx+1));
+    const badge = document.createElement('span');
+    badge.className = 'nbadge';
+    badge.textContent = idx+1;
+    el.appendChild(badge);
+  });
 }
 
 /* ---------- ドラッグ&ドロップ ---------- */
-let dragSrcId = null;
-
 function onDragStart(e){
   const slot = e.target.closest('.slot');
   if(!slot) return;
   dragSrcId = slot.dataset.id;
   e.dataTransfer.effectAllowed='move';
   try{ e.dataTransfer.setData('text/plain', dragSrcId); }catch(_){}
+  applyActiveHighlight();
+}
+function onDragEnd(){
+  dragSrcId = null;
+  applyActiveHighlight();   // 選択中セルがあればそちらへ戻す
 }
 function onDragOver(e){
   const slot = e.target.closest('.slot');
@@ -583,11 +653,22 @@ function onDrop(e){
   renderAll();
 }
 
+// クリックでセルを選択/解除。選択中は隣接top5をハイライトし続ける
+function onSlotClick(e){
+  const slot = e.target.closest('.slot');
+  if(!slot || slot.classList.contains('invalid') || !slot.dataset.id) return;
+  const id = slot.dataset.id;
+  selectedId = (selectedId === id) ? null : id;
+  applyActiveHighlight();
+}
+
 for(const el of [gridEl, singlesEl]){
   el.addEventListener('dragstart', onDragStart);
   el.addEventListener('dragover', onDragOver);
   el.addEventListener('dragleave', onDragLeave);
   el.addEventListener('drop', onDrop);
+  el.addEventListener('dragend', onDragEnd);
+  el.addEventListener('click', onSlotClick);
 }
 
 /* ---------- ツールバー ---------- */

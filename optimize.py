@@ -133,19 +133,20 @@ CONFIG = {
     "sfb_limit": 0.01,     # SFB率の上限(分数)。--sfb-limit で上書き
     "w_sfb_over": 100.0,   # SFB上限超過分のペナルティ重み(制約を実質ハードに)
     # 指effort重み: 弱い指ほど大。pinky<ring<middle/index を誘導する。
-    "finger_effort": {"LP": 3.0, "LR": 2.0, "LM": 1.0, "LI": 1.0,
-                      "RI": 1.0, "RM": 1.0, "RR": 2.0, "RP": 3.0},
+    "finger_effort": {"LP": 1.8, "LR": 1.7, "LM": 1.3, "LI": 1.0,
+                      "RI": 1.0, "RM": 1.0, "RR": 1.7, "RP": 1.8},
 
     # --- 連接の「流れ」評価(ペナルティ。小さいほど高評価) ---
     "w_flow_uni": 1.0,     # 1-gram(モーラ内の2打)の流れ評価の重み
     "w_flow_bi": 1.0,      # 2-gram(モーラ間の境界連接)の流れ評価の重み
     "uin": ["う", "い", "ん"],   # この単打かなが絡む境界は「ロール志向」で評価
     # モーラ内(1-gram): 同手ロールを高評価、repeat/alternateはやや低め
-    "pen_uni": {"roll": 0.0, "repeat": 0.5, "alt": 0.5, "sfb": 1.0},
+    # roll_row = 同手ロールだが段(row)移動を伴うもの(home↔top)。同段ロールより減点。
+    "pen_uni": {"roll": 0.0, "roll_row": 0.2, "repeat": 0.5, "alt": 0.5, "sfb": 1.0},
     # モーラ間(2-gram) ういん接続: ロールを高評価
     "pen_bi_uin": {"roll": 0.0, "alt": 0.5, "repeat": 2.0, "sfb": 1.0},
     # モーラ間(2-gram) それ以外: alternationを高評価。repeat(かな間連打)は特別減点(2.0)
-    "pen_bi_other": {"alt": 0.0, "roll": 0.5, "repeat": 2.0, "sfb": 1.0},
+    "pen_bi_other": {"alt": 0.0, "roll": 0.8, "repeat": 2.0, "sfb": 1.0},
     # EAパラメータ
     "pop_size": 120,
     "elite": 6,
@@ -162,20 +163,23 @@ CONFIG = {
 # 行列スロット(154) と 単打スロット(3) のプリコンピュート
 def build_slots():
     mat_slots = [f + s for f in FIRST_KEYS for s in SECOND_KEYS]
-    mat_fids, mat_top, mat_type, mat_keys = [], [], [], []
+    mat_fids, mat_top, mat_type, mat_keys, mat_roll_row = [], [], [], [], []
     for sid in mat_slots:
         keys = list(sid)  # 必ず2キー
         f0, f1 = KEY_FID[keys[0]], KEY_FID[keys[1]]
         mat_fids.append((f0, f1))
         mat_top.append(sum(1 for k in keys if KEYMAP[k][2] == "top"))
-        mat_type.append(classify_pair(keys[0], keys[1]))  # repeat/sfb/roll/alt
+        t = classify_pair(keys[0], keys[1])  # repeat/sfb/roll/alt
+        mat_type.append(t)
+        # 同手ロールのうち段(row)移動を伴うもの(home↔top)を True
+        mat_roll_row.append(t == "roll" and KEYMAP[keys[0]][2] != KEYMAP[keys[1]][2])
         mat_keys.append(keys)
 
     sgl_slots = list(SINGLE_KEYS)
     sgl_fid = [KEY_FID[k] for k in sgl_slots]
     sgl_top = [1 if KEYMAP[k][2] == "top" else 0 for k in sgl_slots]
     sgl_keys = [[k] for k in sgl_slots]
-    return (mat_slots, mat_fids, mat_top, mat_type, mat_keys,
+    return (mat_slots, mat_fids, mat_top, mat_type, mat_keys, mat_roll_row,
             sgl_slots, sgl_fid, sgl_top, sgl_keys)
 
 
@@ -231,7 +235,9 @@ def fitness(genome, cfg):
         t = MAT_TYPE[i]
         if t == "sfb":
             sfb += w
-        flow_uni_sum += w * pen_uni[t]
+        # 同手ロールで段移動を伴うものは roll_row のペナルティを適用
+        pt = "roll_row" if (t == "roll" and MAT_ROLL_ROW[i]) else t
+        flow_uni_sum += w * pen_uni[pt]
         flow_uni_tot += w
         uni_cnt[t] += w
 
@@ -490,7 +496,7 @@ def handle_signal(signum, frame):
 
 
 def main():
-    global MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_TYPE, MAT_KEYS
+    global MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_TYPE, MAT_KEYS, MAT_ROLL_ROW
     global SGL_SLOTS, SGL_FID, SGL_TOP, SGL_KEYS
     global MAT_ITEMS, MAT_W, SGL_ITEMS, SGL_W, BIGRAM_LIST
 
@@ -509,7 +515,7 @@ def main():
         m1, m2 = key.split("\t")
         BIGRAM_LIST.append((m1, m2, float(fr)))
 
-    (MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_TYPE, MAT_KEYS,
+    (MAT_SLOTS, MAT_FIDS, MAT_TOP, MAT_TYPE, MAT_KEYS, MAT_ROLL_ROW,
      SGL_SLOTS, SGL_FID, SGL_TOP, SGL_KEYS) = build_slots()
     MAT_ITEMS, MAT_W, SGL_ITEMS, SGL_W = build_items(unigram)
 

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>かな直 Playground (v2)</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1f232c; --border:#2a2f3a;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#5aa9e6; --accent2:#7ee787;
+    --warn:#e6a45a; --sfb:#e65a7e; --repeat:#e8c95a; --sep:#8aa3c9;
+    --cell:#222732; --cellhover:#2d3442; --single:#3a2f4a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Noto Sans JP",Meiryo,sans-serif;
+    font-size:14px;line-height:1.5}
+  header{padding:14px 20px;border-bottom:1px solid var(--border);background:var(--panel)}
+  header h1{margin:0 0 4px;font-size:20px}
+  header p{margin:2px 0;color:var(--muted);font-size:12.5px}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px}
+  .wrap{display:flex;gap:16px;padding:16px;align-items:flex-start;flex-wrap:wrap}
+  .col-left{flex:1 1 680px;min-width:360px}
+  .col-right{flex:1 1 380px;min-width:340px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:16px}
+  .panel h2{margin:0 0 10px;font-size:14px;color:var(--accent);letter-spacing:.03em}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:7px;padding:6px 12px;cursor:pointer;font-size:13px}
+  button:hover{background:var(--cellhover)}
+  button.primary{background:#1e3a52;border-color:#2f5f86}
+  button.running{background:#52321e;border-color:#865f2f}
+  .spacer{flex:1}
+  .iter{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}
+
+  /* matrix grid */
+  .grid{display:grid;gap:3px;overflow-x:auto;padding-bottom:6px}
+  .ghead,.rhead{display:flex;align-items:center;justify-content:center;
+    font-weight:700;color:var(--muted);font-size:11px;user-select:none}
+  .ghead{height:20px}
+  .slot{background:var(--cell);border:1px solid var(--border);border-radius:6px;
+    min-height:34px;display:flex;align-items:center;justify-content:center;
+    cursor:grab;font-size:16px;position:relative;transition:background .08s;user-select:none;overflow:hidden}
+  .slot.empty{background:#181c24;color:#3a414f}
+  /* 頻度バー(「い」比)を左からの幅で背景に塗る */
+  .freq-fill{position:absolute;left:0;top:0;bottom:0;width:0;
+    background:rgba(90,169,230,.16);pointer-events:none;z-index:0}
+  .slot .kv{position:relative;z-index:1}
+  /* 使用率が「ぬ」より低いレアかなは灰色 */
+  .slot.rare .kv{color:var(--muted)}
+  .slot.homehome{background:rgba(126,231,135,.15);border-color:rgba(126,231,135,.4)}
+  .slot.sfb{background:rgba(230,90,126,.24);border-color:rgba(230,90,126,.55)}
+  .slot.repeat{background:rgba(232,201,90,.22);border-color:rgba(232,201,90,.6)}
+  .slot:hover{background:var(--cellhover)}
+  .slot.dragover{outline:2px solid var(--accent);outline-offset:-2px}
+  .slot.selected{box-shadow:0 0 0 3px var(--accent);z-index:3}
+  .slot.neighbor{box-shadow:0 0 0 2px var(--accent2),0 0 8px rgba(126,231,135,.5);z-index:2}
+  /* 無効セル(F/J/K行): 色ルールは適用しつつ斜線ハッチを重ねて操作不可を示す */
+  .slot.invalid{cursor:not-allowed}
+  .slot.invalid:hover{background:var(--cell)}
+  .slot.invalid.homehome:hover{background:rgba(126,231,135,.15)}
+  .slot.invalid::after{content:'';position:absolute;inset:0;border-radius:6px;pointer-events:none;
+    background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(0,0,0,.34) 4px,rgba(0,0,0,.34) 8px)}
+  .rhead.single{opacity:.4}
+  .slot .seq{position:absolute;bottom:0;right:3px;font-size:8px;color:#5c6577;pointer-events:none}
+  .sep-l{box-shadow:inset 3px 0 0 var(--sep)}
+  .sep-t{box-shadow:inset 0 3px 0 var(--sep)}
+  .sep-l.sep-t{box-shadow:inset 3px 0 0 var(--sep),inset 0 3px 0 var(--sep)}
+  .singles{display:flex;gap:10px;margin-top:12px}
+  .single-slot{background:var(--single);border:1px solid #4a3d5e;border-radius:8px;
+    padding:6px 14px;display:flex;flex-direction:column;align-items:center;cursor:grab;min-width:56px}
+  .single-slot.selected{box-shadow:0 0 0 3px var(--accent)}
+  .single-slot{position:relative}
+  .single-slot.locked{border-color:var(--accent2)}
+  .single-slot.locked::after{content:'固定';position:absolute;top:1px;right:3px;font-size:8px;color:var(--accent2);opacity:.85}
+  .single-lock{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:12.5px;color:var(--muted);cursor:pointer}
+  .single-slot .k{font-size:11px;color:var(--muted)}
+  .single-slot .v{font-size:22px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:var(--muted)}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+  .note{font-size:11.5px;color:var(--muted);margin-top:8px}
+
+  /* metrics */
+  .totals{display:flex;gap:12px;margin-bottom:12px}
+  .total-card{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+  .total-card .t-label{font-size:11px;color:var(--muted)}
+  .total-card .t-val{font-size:22px;font-variant-numeric:tabular-nums;font-weight:700}
+  .metric{display:grid;grid-template-columns:82px 60px 76px 36px 1fr;align-items:center;gap:6px;padding:5px 0;border-bottom:1px dashed var(--border)}
+  .metric .m-label{color:var(--text);font-size:12.5px}
+  .metric .m-val{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:var(--accent2)}
+  .metric .m-wlabel{font-size:10px;color:var(--muted);text-align:right}
+  .metric .m-wval{font-size:11px;font-variant-numeric:tabular-nums;text-align:right;color:var(--muted)}
+  .metric input[type=range]{width:100%}
+  .metric .w-tag{font-size:10px;color:var(--muted)}
+  .wgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 14px}
+  .wrow{display:grid;grid-template-columns:64px 42px 1fr;align-items:center;gap:6px;font-size:12px}
+  .wrow .wl{color:var(--muted)}
+  .wrow .wv{text-align:right;font-variant-numeric:tabular-nums}
+  .subhead{font-size:12px;color:var(--accent2);margin:10px 0 4px}
+  details{margin-top:8px}
+  summary{cursor:pointer;color:var(--accent);font-size:13px}
+
+  .bars{display:flex;flex-direction:column;gap:5px;margin-top:8px}
+  .bar-line{display:grid;grid-template-columns:44px 1fr 52px;align-items:center;gap:8px}
+  .bar-line .bl{font-size:12px;color:var(--muted)}
+  .bar-track{background:var(--panel2);border-radius:5px;height:15px;overflow:hidden}
+  .bar-fill{height:100%;border-radius:5px;background:var(--accent);transition:width .15s}
+  .bar-line .bv{text-align:right;font-variant-numeric:tabular-nums;font-size:12px}
+  .breakdown{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 16px;margin-top:8px;font-size:12px}
+  .breakdown .bk{display:flex;justify-content:space-between;border-bottom:1px dashed var(--border);padding:2px 0}
+  .breakdown .bk .l{color:var(--muted)}
+  /* 指の使用率(現状値)＋ effort 重みスライダーを併設 */
+  .load-row{display:grid;grid-template-columns:30px 1fr 46px 1fr 30px;align-items:center;gap:6px;padding:2px 0}
+  .load-row .bl{font-size:12px;color:var(--muted)}
+  .load-row .bv{text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--accent2);font-weight:600}
+  .load-row .wv{text-align:right;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .load-row input[type=range]{width:100%}
+  /* 連接内訳(現状値)＋ ペナルティ重みスライダーを併設 */
+  .bk{display:grid;grid-template-columns:52px 54px 1fr;align-items:center;gap:6px;padding:3px 0;border-bottom:1px dashed var(--border);font-size:12px}
+  .bk:last-child{border-bottom:none}
+  .bk .l{color:var(--muted)}
+  .bk .bv2{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:var(--accent2)}
+  .bk2{grid-template-columns:44px 50px 1fr 1fr}
+  .sw{display:grid;grid-template-columns:auto 1fr 30px;align-items:center;gap:4px}
+  .sw .swl{font-size:9.5px;color:var(--muted)}
+  .sw .wv{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+  .sw input[type=range]{width:100%}
+
+  /* detail */
+  .detail-empty{color:var(--muted);font-size:12.5px}
+  .detail-head{display:flex;align-items:baseline;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+  .detail-kana{font-size:30px;font-weight:700}
+  .detail-usage{font-size:15px;color:var(--accent2);font-variant-numeric:tabular-nums}
+  .detail-keys{color:var(--muted);font-size:13px}
+  .detail-bigrams{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:1px 16px;margin-top:4px}
+  .bg-row{display:flex;justify-content:space-between;align-items:baseline;gap:6px;padding:1px 0}
+  .bg-pair{font-size:14px}
+  .bg-val{text-align:right;font-variant-numeric:tabular-nums;font-size:11px;color:var(--muted)}
+  .bg-empty{color:var(--muted);font-size:12px}
+  dialog{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;width:min(640px,92vw)}
+  dialog textarea{width:100%;height:260px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  dialog .dlg-bar{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+  /* Karabiner: ベース配列対応のキー割当設定 */
+  .kc-note{font-size:11.5px;color:var(--muted);margin-bottom:8px}
+  .kc-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:8px}
+  .kc-cell{display:flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:4px 5px;min-width:0}
+  .kc-cell .kc-k{font-weight:700;color:var(--muted);width:12px;text-align:center;flex:none;font-size:11px}
+  .kc-cell input{flex:1 1 0;width:100%;min-width:0;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 4px;font-size:11px;font-family:ui-monospace,Menlo,monospace}
+  .kc-reset{margin-bottom:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>かな直 Playground <span style="color:var(--muted);font-size:13px">v2</span></h1>
+  <p>上段 <code>Q W E R</code> / <code>U I O P</code>・ホーム <code>A S D F</code> / <code>J K L ;</code> の計16キー。2打の組み合わせでかなを入力。</p>
+  <p>単打 <b>う・い・ん</b> は <code>F</code> <code>J</code> <code>K</code>。第1キー13種 × 第2キー16種 → <b>208マス</b>。セルを入れ替えると指標が即時に再計算されます。</p>
+</header>
+
+<div class="wrap">
+  <div class="col-left">
+    <div class="panel">
+      <h2>かなマトリックス（第1キー × 第2キー）</h2>
+      <div class="toolbar">
+        <button id="btnOptimize" class="primary">最適化を開始</button>
+        <span class="iter" id="iterLabel"></span>
+        <span class="spacer"></span>
+        <button id="btnReset">デフォルト</button>
+        <button id="btnImport">インポート</button>
+        <button id="btnExport">エクスポート</button>
+        <button id="btnKarabiner">Karabiner出力</button>
+      </div>
+      <div id="grid" class="grid"></div>
+      <div id="singles" class="singles"></div>
+      <label class="single-lock"><input type="checkbox" id="lockSingle"> 単打キー（F/J/K）を固定して最適化で動かさない</label>
+      <div class="legend">
+        <span><i style="background:rgba(230,90,126,.55)"></i>SFB（同指で別キー連打）</span>
+        <span><i style="background:rgba(232,201,90,.6)"></i>同キー連打</span>
+        <span><i style="background:rgba(126,231,135,.4)"></i>両ホーム</span>
+        <span><i style="background:var(--sep)"></i>左右の境界</span>
+      </div>
+      <div class="note">ドラッグ＆ドロップでかなを入れ替え。クリックで選択すると右側に文字詳細を表示。</div>
+    </div>
+
+    <div class="panel">
+      <h2>文字詳細</h2>
+      <div id="detail"></div>
+    </div>
+  </div>
+
+  <div class="col-right">
+    <div class="panel">
+      <h2>指標と評価重み</h2>
+      <div class="totals">
+        <div class="total-card"><div class="t-label">total cost</div><div class="t-val" id="vCost">–</div></div>
+        <div class="total-card"><div class="t-label">total effort</div><div class="t-val" id="vEffort">–</div></div>
+      </div>
+      <div id="metricRows"></div>
+    </div>
+
+    <div class="panel">
+      <h2>指の使用率（loads）＋ effort 重み</h2>
+      <div id="loadBars"></div>
+    </div>
+
+    <div class="panel">
+      <h2>連接の内訳 ＋ ペナルティ重み</h2>
+      <div class="subhead">モーラ内（uni）｜ 現状値 ＋ pen_uni 重み</div>
+      <div id="uniBreak"></div>
+      <div class="subhead">モーラ間（bi）｜ 現状値 ＋ ういん／その他 の重み</div>
+      <div id="biBreak"></div>
+    </div>
+  </div>
+</div>
+
+<dialog id="ioDialog">
+  <h3 id="ioTitle" style="margin-top:0"></h3>
+  <div id="ioExtra"></div>
+  <textarea id="ioText" spellcheck="false"></textarea>
+  <div class="dlg-bar">
+    <button id="ioCancel">閉じる</button>
+    <button id="ioAction" class="primary"></button>
+  </div>
+</dialog>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
