@@ -655,8 +655,9 @@ function renderKarabinerExtra() {
 
   const grid = document.createElement("div");
   grid.className = "kc-grid";
-  // qwer / asdf / uiop / jkl; の順(4列)で並べる。
-  ["Q", "W", "E", "R", "A", "S", "D", "F", "U", "I", "O", "P", "J", "K", "L", ";"].forEach((k) => {
+  // qwer / asdf / uiop / jkl; ＋ 人差し指拡張 G V H M の順(4列)で並べる。
+  ["Q", "W", "E", "R", "A", "S", "D", "F", "U", "I", "O", "P", "J", "K", "L", ";",
+   "G", "V", "H", "M"].forEach((k) => {
     const cell = document.createElement("label");
     cell.className = "kc-cell";
     const span = document.createElement("span");
