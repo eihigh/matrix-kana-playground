@@ -18,7 +18,7 @@ export function exportLayoutJSON(layout, metrics) {
       rollRowRate: metrics?.rollRowRate,
       flowUni: metrics?.flowUni,
       flowBi: metrics?.flowBi,
-      note: "かな直 v2 配列。mat=行列(21×24=504), single=単打(F/J/K)。人差し指拡張版。",
+      note: "かな直 v2 配列。mat=行列(17×20=340), single=単打(F/J/K)。人差し指拡張版(G/H/V/M)。",
     },
     mat: { ...layout.mat },
     single: { ...layout.single },
