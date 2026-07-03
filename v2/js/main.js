@@ -314,18 +314,24 @@ function buildBreakdowns() {
   UNI_TYPES.forEach((t) => {
     uni.appendChild(breakRow("uni", t, [["pen_uni", t]], ["重み"]));
   });
+  // モーラ間はういん接続とその他接続を別行に分ける(現状値・重みとも独立表示)。
   const bi = $("biBreak");
   bi.innerHTML = "";
   BI_TYPES.forEach((t) => {
-    bi.appendChild(breakRow("bi", t, [["pen_bi_uin", t], ["pen_bi_other", t]], ["ういん", "その他"]));
+    bi.appendChild(breakRow("biUin", t, [["pen_bi_uin", t]], ["重み"], `${t}・ういん`));
+  });
+  BI_TYPES.forEach((t) => {
+    bi.appendChild(breakRow("biOther", t, [["pen_bi_other", t]], ["重み"], `${t}・その他`));
   });
 }
 
 // 連接内訳の1行: [種別 | 現状値 | (ラベル+スライダー+重み値)...]。
-function breakRow(kind, type, paths, labels) {
+// labelText を省略すると type をそのまま行ラベルに使う。
+function breakRow(kind, type, paths, labels, labelText = type) {
   const row = document.createElement("div");
-  row.className = "bk" + (paths.length > 1 ? " bk2" : "");
-  let html = `<span class="l">${type}</span><span class="bv2" data-${kind}="${type}">–</span>`;
+  const wide = labelText !== type ? " bkw" : ""; // 文脈付きラベル(例 roll・ういん)は幅広に。
+  row.className = "bk" + (paths.length > 1 ? " bk2" : "") + wide;
+  let html = `<span class="l">${labelText}</span><span class="bv2" data-${kind}="${type}">–</span>`;
   paths.forEach((p, i) => {
     const key = p.join(".");
     html += `<span class="sw">` +
@@ -474,8 +480,10 @@ function renderMetrics() {
     if (s) s.textContent = fmtPct(m.uni[t] || 0);
   });
   BI_TYPES.forEach((t) => {
-    const s = document.querySelector(`[data-bi="${t}"]`);
-    if (s) s.textContent = fmtPct(m.bi[t] || 0);
+    const su = document.querySelector(`[data-biUin="${t}"]`);
+    if (su) su.textContent = fmtPct(m.biUin[t] || 0);
+    const so = document.querySelector(`[data-biOther="${t}"]`);
+    if (so) so.textContent = fmtPct(m.biOther[t] || 0);
   });
 }
 

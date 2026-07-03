@@ -54,7 +54,9 @@ export function computeMetrics(layout, ngram, weights) {
   let flowUniSum = 0, flowUniTot = 0;
   let flowBiSum = 0, flowBiTot = 0;
   const uniCnt = { roll: 0, alt: 0, repeat: 0, sfb: 0 };
-  const biCnt = { roll: 0, alt: 0, repeat: 0, sfb: 0 };
+  // モーラ間はういん接続とその他接続で内訳を分ける(表示・重みを別行にするため)。
+  const biCntUin = { roll: 0, alt: 0, repeat: 0, sfb: 0 };
+  const biCntOther = { roll: 0, alt: 0, repeat: 0, sfb: 0 };
 
   const isTop = (k) => KEYMAP[k].row === "top" ? 1 : 0;
   const isBottom = (k) => KEYMAP[k].row === "bottom" ? 1 : 0;
@@ -100,10 +102,11 @@ export function computeMetrics(layout, ngram, weights) {
     const t = classifyPair(a, b);
     if (t === "sfb") sfb += freq * keyDist(a, b);
     if (t === "roll") rollRow += freq * rowDist(a, b);
-    const pen = (uinSet.has(m1) || uinSet.has(m2)) ? w.pen_bi_uin : w.pen_bi_other;
+    const isUin = uinSet.has(m1) || uinSet.has(m2);
+    const pen = isUin ? w.pen_bi_uin : w.pen_bi_other;
     flowBiSum += freq * pen[t];
     flowBiTot += freq;
-    biCnt[t] += freq;
+    (isUin ? biCntUin : biCntOther)[t] += freq;
   }
 
   if (total <= 0 || totalBg <= 0) {
@@ -165,7 +168,10 @@ export function computeMetrics(layout, ngram, weights) {
     flowUni,
     flowBi,
     uni: rates(uniCnt, flowUniTot),
-    bi: rates(biCnt, flowBiTot),
+    // ういん/その他とも同じ分母(全モーラ間連接)で正規化するので、
+    // biUin[t] + biOther[t] は旧 bi[t](その種別の全体割合)に一致する。
+    biUin: rates(biCntUin, flowBiTot),
+    biOther: rates(biCntOther, flowBiTot),
     loads: loadsObj,
   };
 }
