@@ -31,15 +31,19 @@ const singleEls = {}; // key -> element
 // ---- 指標行 / 重み定義 ----
 const METRIC_ROWS = [
   { key: "topRatio", label: "上段率", pct: true, wpath: ["w_top"], wl: "w_top", wmax: 5 },
+  { key: "bottomRatio", label: "下段率", pct: true, wpath: ["w_bottom"], wl: "w_bottom", wmax: 5 },
+  { key: "stretchRatio", label: "内側伸展率", pct: true, wpath: ["w_stretch"], wl: "w_stretch", wmax: 5 },
   { key: "effort", label: "指effort", pct: false, wpath: ["w_effort"], wl: "w_effort", wmax: 5 },
-  { key: "sfbRate", label: "SFB率", pct: true, wpath: ["w_sfb"], wl: "w_sfb", wmax: 10 },
+  { key: "sfbRate", label: "SFB率(距離重み)", pct: true, wpath: ["w_sfb"], wl: "w_sfb", wmax: 10 },
+  { key: "rollRowRate", label: "段またぎroll", pct: false, wpath: ["w_roll_row"], wl: "w_roll_row", wmax: 5 },
   { key: "flowUni", label: "flow_uni", pct: false, wpath: ["w_flow_uni"], wl: "w_flow_uni", wmax: 5 },
   { key: "flowBi", label: "flow_bi", pct: false, wpath: ["w_flow_bi"], wl: "w_flow_bi", wmax: 5 },
   { key: "orderPen", label: "順序ペナルティ", pct: false, wpath: ["w_order"], wl: "w_order", wmax: 5 },
 ];
 
 // 連接内訳の種別(現状値の表示と、対応するペナルティ重みスライダーを併設)。
-const UNI_TYPES = ["roll", "roll_row", "alt", "repeat", "sfb"];
+// roll の段またぎは独立項 w_roll_row(段またぎroll)で計上するためここには含めない。
+const UNI_TYPES = ["roll", "alt", "repeat", "sfb"];
 const BI_TYPES = ["roll", "alt", "repeat", "sfb"];
 
 // ---- ユーティリティ ----
