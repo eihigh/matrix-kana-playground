@@ -55,6 +55,11 @@
   .slot.dragover{outline:2px solid var(--accent);outline-offset:-2px}
   .slot.selected{box-shadow:0 0 0 3px var(--accent);z-index:3}
   .slot.neighbor{box-shadow:0 0 0 2px var(--accent2),0 0 8px rgba(126,231,135,.5);z-index:2}
+  .slot.suggest{box-shadow:0 0 0 2px var(--warn),0 0 9px rgba(230,164,90,.6);z-index:2}
+  /* 微調整可能: スワップ差分が +0.0005 未満(ほぼ無コストで動かせる)セル */
+  .slot.tweak{outline:1.5px dashed rgba(138,163,201,.75);outline-offset:-3px}
+  /* タイピング練習: 今打つべきかなの位置を発光 */
+  .slot.typing-target{box-shadow:0 0 0 3px var(--accent),0 0 14px 4px rgba(90,169,230,.85);z-index:5;animation:tp-glow .6s ease-in-out infinite}
   /* 無効セル(F/J/K行): 色ルールは適用しつつ斜線ハッチを重ねて操作不可を示す */
   .slot.invalid{cursor:not-allowed}
   .slot.invalid:hover{background:var(--cell)}
@@ -70,6 +75,7 @@
   .single-slot{background:var(--single);border:1px solid #4a3d5e;border-radius:8px;
     padding:6px 14px;display:flex;flex-direction:column;align-items:center;cursor:grab;min-width:56px}
   .single-slot.selected{box-shadow:0 0 0 3px var(--accent)}
+  .single-slot.typing-target{box-shadow:0 0 0 3px var(--accent),0 0 14px 4px rgba(90,169,230,.85);z-index:5;animation:tp-glow .6s ease-in-out infinite}
   .single-slot{position:relative}
   .single-slot.locked{border-color:var(--accent2)}
   .single-slot.locked::after{content:'固定';position:absolute;top:1px;right:3px;font-size:8px;color:var(--accent2);opacity:.85}
@@ -115,6 +121,11 @@
   .load-row .bv{text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--accent2);font-weight:600}
   .load-row .wv{text-align:right;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
   .load-row input[type=range]{width:100%}
+  .rm-row{display:grid;grid-template-columns:30px 1fr 34px;align-items:center;gap:6px;padding:2px 0}
+  .rm-row .bl{font-size:12px;color:var(--muted)}
+  .rm-row .wv{text-align:right;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .rm-row .rm-stat{font-size:10.5px;color:var(--accent2);font-variant-numeric:tabular-nums;text-align:right}
+  .rm-row input[type=range]{width:100%}
   /* 連接内訳(現状値)＋ ペナルティ重みスライダーを併設 */
   .bk{display:grid;grid-template-columns:52px 54px 1fr;align-items:center;gap:6px;padding:3px 0;border-bottom:1px dashed var(--border);font-size:12px}
   .bk:last-child{border-bottom:none}
@@ -127,6 +138,27 @@
   .sw .wv{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
   .sw input[type=range]{width:100%}
 
+  /* 例文の flow 分類(常時表示) */
+  .flowex-sentence{font-size:14px;font-weight:600;margin-bottom:8px}
+  .flowex-stream{display:flex;flex-wrap:wrap;align-items:center;gap:3px;line-height:1.9}
+  .flowex-key{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;
+    min-width:22px;padding:2px 5px;border-radius:5px;background:var(--panel2);border:1px solid var(--border)}
+  .flowex-key .fk-key{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+  .flowex-key .fk-mora{font-size:9.5px;color:var(--muted)}
+  .flowex-key.unplaced{opacity:.5}
+  .flowex-op{display:inline-flex;align-items:center;font-size:10px;padding:2px 6px;border-radius:9px;color:#0d0f14;font-weight:700}
+  .flowex-op.cat-none{background:transparent;color:var(--muted);font-weight:400}
+  .cat-inroll{background:rgba(126,231,135,.85)}
+  .cat-outroll{background:rgba(110,180,240,.85)}
+  .cat-redirect{background:rgba(240,140,70,.92)}
+  .cat-alt{background:rgba(150,160,175,.55);color:var(--text)}
+  .cat-repeat{background:rgba(232,201,90,.9)}
+  .cat-sfb{background:rgba(230,90,126,.92);color:#fff}
+  .flowex-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;font-size:11px;color:var(--muted);
+    font-variant-numeric:tabular-nums}
+  .flowex-legend .lg{display:inline-flex;align-items:center;gap:4px}
+  .flowex-legend .lg i{width:11px;height:11px;border-radius:3px;display:inline-block}
+
   /* detail */
   .detail-empty{color:var(--muted);font-size:12.5px}
   .detail-head{display:flex;align-items:baseline;gap:12px;margin-bottom:8px;flex-wrap:wrap}
@@ -134,10 +166,41 @@
   .detail-usage{font-size:15px;color:var(--accent2);font-variant-numeric:tabular-nums}
   .detail-keys{color:var(--muted);font-size:13px}
   .detail-bigrams{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:1px 16px;margin-top:4px}
-  .bg-row{display:flex;justify-content:space-between;align-items:baseline;gap:6px;padding:1px 0}
+  .bg-row{display:flex;justify-content:space-between;align-items:baseline;gap:6px;padding:1px 5px;border-radius:5px;border-left:3px solid transparent}
+  .bg-row.good{background:rgba(126,231,135,.14);border-left-color:rgba(126,231,135,.85)}
+  .bg-row.bad{background:rgba(230,90,126,.16);border-left-color:rgba(230,90,126,.9)}
+  .bg-row.good .bg-pair{color:var(--accent2)}
+  .bg-row.bad .bg-pair{color:var(--sfb)}
   .bg-pair{font-size:14px}
   .bg-val{text-align:right;font-variant-numeric:tabular-nums;font-size:11px;color:var(--muted)}
   .bg-empty{color:var(--muted);font-size:12px}
+  /* タイピング練習 */
+  .typing-top{margin:16px 16px 0;padding:10px 14px}
+  .typing-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+  .tp-title{font-size:14px;color:var(--accent);font-weight:600;letter-spacing:.03em}
+  .tp-stats{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;margin-left:auto}
+  .typing-passage{font-size:20px;line-height:1.9;
+    background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;
+    max-height:150px;overflow-y:auto;outline:none;letter-spacing:1px;cursor:text;word-break:break-all}
+  .typing-passage:focus{border-color:var(--accent)}
+  .tp-char{color:var(--muted);border-radius:3px;padding:0 1px}
+  .tp-char.ok{color:var(--accent2)}
+  .tp-char.err{color:#fff;background:rgba(230,90,126,.7)}
+  .tp-char.cur{color:var(--text);text-decoration:underline;text-underline-offset:4px;text-decoration-color:var(--accent)}
+  .tp-char.cur.miss{color:#fff;background:rgba(230,90,126,.85);text-decoration:none}
+  @keyframes tp-glow{0%,100%{box-shadow:0 0 0 3px var(--accent),0 0 8px 3px rgba(90,169,230,.8)}50%{box-shadow:0 0 0 3px var(--accent),0 0 18px 7px rgba(90,169,230,1)}}
+  .tp-done{margin-left:8px;color:var(--accent2);font-weight:700}
+  /* 配置サジェスト */
+  .detail-suggest{margin:2px 0 10px;padding:8px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:8px}
+  .sg-head{font-size:11.5px;color:var(--muted);margin-bottom:5px}
+  .sg-row{display:grid;grid-template-columns:44px 1fr auto;align-items:baseline;gap:8px;padding:2px 6px;border-radius:5px;border-left:3px solid transparent;font-size:12.5px}
+  .sg-row.good{background:rgba(126,231,135,.14);border-left-color:rgba(126,231,135,.85)}
+  .sg-row.bad{background:rgba(150,160,175,.1);border-left-color:rgba(150,160,175,.5)}
+  .sg-slot{font-weight:700;font-family:ui-monospace,Menlo,monospace}
+  .sg-part{color:var(--muted)}
+  .sg-delta{text-align:right;font-variant-numeric:tabular-nums}
+  .sg-row.good .sg-delta{color:var(--accent2)}
+  .sg-row.bad .sg-delta{color:var(--muted)}
   dialog{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;width:min(640px,92vw)}
   dialog textarea{width:100%;height:260px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
   dialog .dlg-bar{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
@@ -157,12 +220,17 @@
   <p>単打 <b>う・い・ん</b> は <code>F</code> <code>J</code> <code>K</code>。第1キー17種 × 第2キー20種 → <b>340マス</b>。セルを入れ替えると指標が即時に再計算されます。</p>
 </header>
 
+<div class="panel typing-top">
+  <div id="typingPanel"></div>
+</div>
+
 <div class="wrap">
   <div class="col-left">
     <div class="panel">
       <h2>かなマトリックス（第1キー × 第2キー）</h2>
       <div class="toolbar">
-        <button id="btnOptimize" class="primary">最適化を開始</button>
+        <button id="btnOptimize" class="primary" title="焼きなまし(SA)で探索。停止すると自動で整地(polish)して局所最適まで仕上げます">最適化を開始</button>
+        <button id="btnPolish" title="配置済みかなを巡回し、改善するスワップだけを適用して局所最適まで詰めます">整地（polish）</button>
         <span class="iter" id="iterLabel"></span>
         <span class="spacer"></span>
         <button id="btnReset">デフォルト</button>
@@ -204,11 +272,20 @@
     </div>
 
     <div class="panel">
+      <h2>ロール逸脱の指重み（roll_move｜vbounce用）</h2>
+      <div id="rollMoveBars"></div>
+    </div>
+
+    <div class="panel">
       <h2>連接の内訳 ＋ ペナルティ重み</h2>
-      <div class="subhead">モーラ内（uni）｜ 現状値 ＋ pen_uni 重み</div>
-      <div id="uniBreak"></div>
-      <div class="subhead">モーラ間（bi）｜ ういん接続／その他接続を別行で表示（現状値＋重み）</div>
-      <div id="biBreak"></div>
+      <div class="subhead">方向つきロール状態機械（bigram駆動）｜ 現状値 ＋ pen_flow 重み。方向は x軸のみ（段跨ぎは vbounce）。inroll/outroll は既定同値、sfb は w_sfb で減点。</div>
+      <div id="flowBreak"></div>
+    </div>
+
+    <div class="panel">
+      <h2>例文の flow 分類</h2>
+      <div class="subhead">現在の配置で例文を打鍵したときの連接分類（実ストリーム）。配置を変えると即時更新。</div>
+      <div id="flowExample"></div>
     </div>
   </div>
 </div>

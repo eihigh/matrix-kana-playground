@@ -8,8 +8,8 @@
 // メッセージ(worker → main):
 //   { type:"progress", layout, metrics, iter } 途中経過(現在の最良)
 
-import { MAT_SLOTS, SINGLE_KEYS, cloneLayout } from "./layout.js";
-import { computeMetrics } from "./metrics.js";
+import { MAT_SLOTS, SINGLE_KEYS, cloneLayout, buildMoraKeys } from "./layout.js";
+import { computeMetrics, suggestPlacements } from "./metrics.js";
 
 let ngram = null;
 let weights = null;
@@ -21,6 +21,11 @@ let running = false;
 let iter = 0;
 let lockSingle = false; // 単打キー(F/J/K)を固定して最適化で動かさない
 let maxFreq = 1;        // 行列上のかなの最大頻度(重み付き選択の正規化用)
+
+// polish(貪欲局所探索)用の状態。
+let polishMoras = [];   // polish 中に循環する配置済みモーラ(不変)
+let polishCursor = 0;
+let polishNoImprove = 0;
 
 // SA パラメータ
 const T0 = 0.015;
@@ -157,6 +162,55 @@ function postProgress(force) {
   });
 }
 
+// polish: 配置済みモーラを巡回し、各モーラの最良スワップ(差分計算)を適用して
+// 2-opt 局所最適まで詰める。行列内の入替のみ(単打は動かさない)。
+function polishStep() {
+  if (!running) {
+    postProgress(true);
+    self.postMessage({ type: "stopped", iter });
+    return;
+  }
+  const PER_STEP = 3; // 1回のイベントループで数モーラ処理してテンポを上げる。
+  for (let n = 0; n < PER_STEP; n++) {
+    if (polishMoras.length === 0 || polishNoImprove >= polishMoras.length) {
+      running = false;
+      postProgress(true);
+      self.postMessage({ type: "stopped", iter });
+      return;
+    }
+    const mora = polishMoras[polishCursor % polishMoras.length];
+    polishCursor++;
+    // 現在のスロットを探す(スワップで移動するため毎回検索)。
+    let slot = null;
+    for (const s of MAT_SLOTS) if (cur.mat[s] === mora) { slot = s; break; }
+    if (!slot) { polishNoImprove++; continue; }
+
+    const moraKeys = buildMoraKeys(cur);
+    const candidates = [];
+    for (const s of MAT_SLOTS) {
+      if (s === slot) continue;
+      const occ = cur.mat[s];
+      if (occ === mora) continue;
+      candidates.push({ slot: s, occ });
+    }
+    const { results } = suggestPlacements(ngram, weights, moraKeys, mora, slot, candidates, 1);
+    const b0 = results[0];
+    if (b0 && b0.delta < -1e-9) {
+      swapMat(slot, b0.slot);
+      iter++;
+      polishNoImprove = 0;
+      const r = evalCost(cur);
+      curCost = r.cost;
+      best = cloneLayout(cur);
+      bestMetrics = r.metrics;
+    } else {
+      polishNoImprove++;
+    }
+  }
+  postProgress();
+  setTimeout(polishStep, 0);
+}
+
 self.onmessage = (e) => {
   const msg = e.data;
   if (msg.type === "start") {
@@ -166,6 +220,19 @@ self.onmessage = (e) => {
     adopt(msg.layout);
     iter = 0;
     if (!running) { running = true; loop(); }
+    postProgress(true);
+  } else if (msg.type === "polish") {
+    ngram = msg.ngram;
+    weights = msg.weights;
+    lockSingle = !!msg.lockSingle;
+    adopt(msg.layout);
+    iter = 0;
+    // 配置済みモーラ(polish 中は不変)を巡回対象に。
+    polishMoras = [];
+    for (const s of MAT_SLOTS) if (cur.mat[s]) polishMoras.push(cur.mat[s]);
+    polishCursor = 0;
+    polishNoImprove = 0;
+    if (!running) { running = true; polishStep(); }
     postProgress(true);
   } else if (msg.type === "stop") {
     running = false;

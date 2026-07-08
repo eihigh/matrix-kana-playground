@@ -19,7 +19,7 @@ const PENDING_TIMEOUT_MS = 500;
 
 // かな → ローマ字(IME にそのまま打鍵させる文字列)。
 // くんれい/ワープロ式ベース。IME により小書き l/x 等は差異があるため要調整。
-const KANA_TO_ROMAJI = {
+export const KANA_TO_ROMAJI = {
   "あ": "a", "い": "i", "う": "u", "え": "e", "お": "o",
   "か": "ka", "き": "ki", "く": "ku", "け": "ke", "こ": "ko",
   "が": "ga", "ぎ": "gi", "ぐ": "gu", "げ": "ge", "ご": "go",

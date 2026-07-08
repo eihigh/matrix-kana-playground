@@ -8,8 +8,8 @@ export const FID = Object.fromEntries(FINGER_ORDER.map((f, i) => [f, i]));
 // キー定義: key -> {hand, finger, row, x, y, stretch}。
 //   row  : "top" | "home" | "bottom"(段の名前。上段率/下段率などの集計に使う)
 //   x, y : キーの物理座標。y は home=0, top=-1, bottom=+1。x は左端 0 から右へ。
-//          SFB の距離重み・段またぎ roll の段差はこの座標から計算する。
-//   stretch: 人差し指の内側列(G, H)。横伸展ペナルティ(内側伸展率)の対象。
+//          SFB の距離重みはこの座標から計算する。
+//   stretch: 人差し指の内側列(G, H)。人差し拡張率/ロール逸脱(vbounce)の対象。
 //
 // 列(x)の割り当て:
 //   左  LP=0 LR=1 LM=2 LI(ホーム列)=3 LI(内側列)=4
@@ -123,11 +123,6 @@ export function keyDist(k1, k2) {
   const a = KEYMAP[k1], b = KEYMAP[k2];
   const dx = a.x - b.x, dy = a.y - b.y;
   return Math.sqrt(dx * dx + dy * dy);
-}
-
-// 2キーの段差 |Δrow|。同手ロールの段またぎ度合いに使う(旧 roll_row の一般化)。
-export function rowDist(k1, k2) {
-  return Math.abs(KEYMAP[k1].y - KEYMAP[k2].y);
 }
 
 // あるモーラを打つ物理キー列を返す(行列は2キー、単打は1キー)。

@@ -3,8 +3,9 @@ import {
   FINGER_ORDER, FIRST_KEYS, SECOND_KEYS, SINGLE_KEYS, KEYMAP, KEY_CODE,
   MAT_SLOTS, classifyPair, buildMoraKeys, defaultLayout, cloneLayout,
 } from "./layout.js";
-import { computeMetrics, defaultWeights } from "./metrics.js";
+import { computeMetrics, defaultWeights, classifyStream, suggestPlacements } from "./metrics.js";
 import { renderDetail } from "./detail.js";
+import { initTyping } from "./typing.js";
 import {
   exportLayoutJSON, parseLayoutJSON, saveLocal, loadLocal, downloadText,
 } from "./storage.js";
@@ -21,6 +22,9 @@ const state = {
   stopping: false, // 停止要求後、ワーカーが実際に止まるまでの間
   lockSingle: false, // 単打キー(F/J/K)を固定して最適化で動かさない
   keyCodes: { ...KEY_CODE }, // Karabiner出力のFROM側key_code(ベース配列に合わせて変更可)
+  suggest: null, // 選択かなの配置サジェスト { mora, curSlot, list, bestSet }
+  mode: null, // 実行中の最適化モード: null | "sa" | "polish"
+  typingKana: null, // タイピング練習で現在打つべきかな(マトリックスを発光)
   iter: 0,
 };
 
@@ -31,20 +35,31 @@ const singleEls = {}; // key -> element
 // ---- 指標行 / 重み定義 ----
 const METRIC_ROWS = [
   { key: "topRatio", label: "上段率", pct: true, wpath: ["w_top"], wl: "w_top", wmax: 5 },
-  { key: "bottomRatio", label: "下段率", pct: true, wpath: ["w_bottom"], wl: "w_bottom", wmax: 5 },
-  { key: "stretchRatio", label: "内側伸展率", pct: true, wpath: ["w_stretch"], wl: "w_stretch", wmax: 5 },
+  { key: "indexStretchRate", label: "人差し内側率(G/H)", pct: true, wpath: ["w_index_stretch"], wl: "w_index_stretch", wmax: 5 },
+  { key: "indexBottomRate", label: "人差し下段率(V/M)", pct: true, wpath: ["w_index_bottom"], wl: "w_index_bottom", wmax: 5 },
   { key: "effort", label: "指effort", pct: false, wpath: ["w_effort"], wl: "w_effort", wmax: 5 },
   { key: "sfbRate", label: "SFB率(距離重み)", pct: true, wpath: ["w_sfb"], wl: "w_sfb", wmax: 10 },
-  { key: "rollRowRate", label: "段またぎroll", pct: false, wpath: ["w_roll_row"], wl: "w_roll_row", wmax: 5 },
-  { key: "flowUni", label: "flow_uni", pct: false, wpath: ["w_flow_uni"], wl: "w_flow_uni", wmax: 5 },
-  { key: "flowBi", label: "flow_bi", pct: false, wpath: ["w_flow_bi"], wl: "w_flow_bi", wmax: 5 },
+  { key: "skipRate", label: "同指スキップ(人差し大移動)", pct: true, wpath: ["w_skip"], wl: "w_skip", wmax: 10 },
+  { key: "vbounceRate", label: "ロール逸脱", pct: false, wpath: ["w_vbounce"], wl: "w_vbounce", wmax: 5 },
+  { key: "flow", label: "flow(連接)", pct: false, wpath: ["w_flow"], wl: "w_flow", wmax: 5 },
   { key: "orderPen", label: "順序ペナルティ", pct: false, wpath: ["w_order"], wl: "w_order", wmax: 5 },
 ];
 
-// 連接内訳の種別(現状値の表示と、対応するペナルティ重みスライダーを併設)。
-// roll の段またぎは独立項 w_roll_row(段またぎroll)で計上するためここには含めない。
-const UNI_TYPES = ["roll", "alt", "repeat", "sfb"];
-const BI_TYPES = ["roll", "alt", "repeat", "sfb"];
+// 連接内訳の種別(現状値の表示と、対応する pen_flow 重みスライダーを併設)。
+// 方向つきロール状態機械の分類。sfb は別枠(w_sfb)なので重みスライダーは持たない。
+const FLOW_TYPES = ["inroll", "outroll", "redirect", "alt", "repeat", "sfb"];
+
+// 例文の flow 分類(常時表示)。例文はモーラ列として固定。
+const FLOW_EXAMPLE_TEXT = "ありがとうございます。";
+const FLOW_EXAMPLE_MORAS = ["あ", "り", "が", "と", "う", "ご", "ざ", "い", "ま", "す", "。"];
+const FLOW_CAT_META = {
+  inroll: { label: "内", legend: "内ロール" },
+  outroll: { label: "外", legend: "外ロール" },
+  redirect: { label: "反", legend: "反転(redirect)" },
+  alt: { label: "互", legend: "交互(alt)" },
+  repeat: { label: "連", legend: "連打(repeat)" },
+  sfb: { label: "S", legend: "SFB" },
+};
 
 // ---- ユーティリティ ----
 const $ = (id) => document.getElementById(id);
@@ -87,11 +102,28 @@ async function init() {
   buildSingles();
   buildMetricRows();
   buildLoads();
+  buildRollMove();
   buildBreakdowns();
   wireToolbar();
 
   recomputeLocal();
   renderAll();
+
+  // タイピング練習パネル: jap-n.txt を取得して初期化(UI表示を待たせない)。
+  fetch("./jap-n.txt")
+    .then((r) => r.text())
+    .then((txt) => initTyping($("typingPanel"), txt, setTypingTarget))
+    .catch(() => {
+      const el = $("typingPanel");
+      if (el) el.innerHTML = `<div class="tp-note">jap-n.txt を読み込めませんでした。</div>`;
+    });
+}
+
+// タイピング練習から現在のかなを受け取り、マトリックスの該当セルを発光させる。
+function setTypingTarget(kana) {
+  state.typingKana = kana || null;
+  renderGrid();
+  renderSingles();
 }
 
 // ngram_data.json → 使いやすい形へ。
@@ -143,7 +175,7 @@ function keyPairColor(f, s) {
   const type = classifyPair(f, s);
   if (type === "sfb") return "sfb";
   if (type === "repeat") return "repeat";
-  if (KEYMAP[f].row === "home" && KEYMAP[s].row === "home") return "homehome";
+  if (KEYMAP[f].row === "home" && KEYMAP[s].row === "home" && !KEYMAP[f].stretch && !KEYMAP[s].stretch) return "homehome";
   return "";
 }
 
@@ -152,24 +184,24 @@ function buildGrid() {
   grid.style.gridTemplateColumns = `26px repeat(${SECOND_KEYS.length}, minmax(30px, 1fr))`;
   grid.innerHTML = "";
 
-  // ヘッダ行
-  grid.appendChild(el("div", "ghead", "1\\2"));
-  for (const s of SECOND_KEYS) {
-    grid.appendChild(el("div", "ghead" + (s === SEP_KEY ? " sep-l" : ""), s));
+  // ヘッダ行: 列 = 第1キー
+  grid.appendChild(el("div", "ghead", "2\\1"));
+  for (const f of SECOND_KEYS) {
+    grid.appendChild(el("div", "ghead" + (f === SEP_KEY ? " sep-l" : ""), f));
   }
 
-  // 本体: 16キー全てを行に出し、単打キー(F/J/K)の行は無効セルとして描画する。
-  SECOND_KEYS.forEach((f) => {
-    const single = SINGLE_KEYS.includes(f);
+  // 本体: 行 = 第2キー、列 = 第1キー。単打キー(F/J/K)の列は無効セルとして描画する。
+  SECOND_KEYS.forEach((s) => {
     grid.appendChild(
-      el("div", "rhead" + (single ? " single" : "") + (f === SEP_KEY ? " sep-t" : ""), f)
+      el("div", "rhead" + (s === SEP_KEY ? " sep-t" : ""), s)
     );
-    SECOND_KEYS.forEach((s) => {
+    SECOND_KEYS.forEach((f) => {
+      const single = SINGLE_KEYS.includes(f);
       if (single) {
         // 無効セル: 色ルールは適用しつつ斜線ハッチを重ねる。操作は受け付けない。
         const inv = document.createElement("div");
         const color = keyPairColor(f, s);
-        inv.className = ("slot invalid " + color + (s === SEP_KEY ? " sep-l" : "")).trim();
+        inv.className = ("slot invalid " + color + (f === SEP_KEY ? " sep-l" : "")).trim();
         inv.title = `${f} は単打キーのため第1キーになりません`;
         grid.appendChild(inv);
         return;
@@ -193,8 +225,8 @@ function buildGrid() {
       cell._kv = kv;
       cell._fill = fill;
       // 左右境界
-      if (s === SEP_KEY) cell.classList.add("sep-l");
-      if (f === SEP_KEY) cell.classList.add("sep-t");
+      if (f === SEP_KEY) cell.classList.add("sep-l");
+      if (s === SEP_KEY) cell.classList.add("sep-t");
       attachCellEvents(cell, "mat", slot);
       cellEls[slot] = cell;
       grid.appendChild(cell);
@@ -269,13 +301,43 @@ function swap(kind, a, b) {
 function selectCell(kind, id) {
   const mora = kind === "mat" ? state.layout.mat[id] : state.layout.single[id];
   state.selected = { kind, id, mora };
+  computeSuggestions();
   renderGrid();
   renderDetailPanel();
+}
+
+// 選択した行列かなを各スロットに置いた場合の総コストを試算し、改善する候補を提案。
+// 候補スロットの占有かなとはスワップする前提。差分計算で高速評価する。
+function computeSuggestions() {
+  const sel = state.selected;
+  if (state.optimizing || !sel || sel.kind !== "mat" || !sel.mora) {
+    state.suggest = null;
+    return;
+  }
+  const mora = sel.mora;
+  const curSlot = sel.id;
+  const mat = state.layout.mat;
+  const moraKeys = buildMoraKeys(state.layout);
+  const candidates = [];
+  for (const slot of MAT_SLOTS) {
+    if (slot === curSlot) continue;
+    const occ = mat[slot];
+    if (occ === mora) continue;
+    candidates.push({ slot, occ });
+  }
+  const { baseCost, results, tweak } = suggestPlacements(
+    state.ngram, state.weights, moraKeys, mora, curSlot, candidates, 6);
+  const list = results.map((r) => ({ slot: r.slot, partner: r.occ, delta: r.delta }));
+  const bestSet = new Set(list.filter((r) => r.delta < 0).map((r) => r.slot));
+  // ΔCost が +0.0005 未満のスロット=「微調整可能(ほぼ無コストで動かせる)」。
+  const tweakSet = new Set(tweak);
+  state.suggest = { mora, curSlot, base: baseCost, list, bestSet, tweakSet };
 }
 
 // ユーザー編集後の共通処理。
 function onLayoutEdited() {
   recomputeLocal();
+  computeSuggestions();
   if (state.optimizing && worker) {
     worker.postMessage({ type: "update", layout: state.layout });
   }
@@ -309,19 +371,13 @@ function buildMetricRows() {
 }
 
 function buildBreakdowns() {
-  const uni = $("uniBreak");
-  uni.innerHTML = "";
-  UNI_TYPES.forEach((t) => {
-    uni.appendChild(breakRow("uni", t, [["pen_uni", t]], ["重み"]));
-  });
-  // モーラ間はういん接続とその他接続を別行に分ける(現状値・重みとも独立表示)。
-  const bi = $("biBreak");
-  bi.innerHTML = "";
-  BI_TYPES.forEach((t) => {
-    bi.appendChild(breakRow("biUin", t, [["pen_bi_uin", t]], ["重み"], `${t}・ういん`));
-  });
-  BI_TYPES.forEach((t) => {
-    bi.appendChild(breakRow("biOther", t, [["pen_bi_other", t]], ["重み"], `${t}・その他`));
+  const box = $("flowBreak");
+  box.innerHTML = "";
+  FLOW_TYPES.forEach((t) => {
+    // sfb は w_sfb 側で減点するため pen_flow スライダーを持たない。
+    const paths = t === "sfb" ? [] : [["pen_flow", t]];
+    const labels = t === "sfb" ? [] : ["重み"];
+    box.appendChild(breakRow("flow", t, paths, labels));
   });
 }
 
@@ -382,6 +438,42 @@ function buildLoads() {
   });
 }
 
+// vbounce 用: 逸脱重み roll_move のスライダー(非人差し指は指ごと1つ、人差し指は方向別)。
+// 各行に現在の逸脱出現率(スタッツ)も併記する。
+function buildRollMove() {
+  const box = $("rollMoveBars");
+  box.innerHTML = "";
+  const addRow = (path, label, dev, max = 5, title = "") => {
+    const row = document.createElement("div");
+    row.className = "rm-row";
+    row.style.gridTemplateColumns = "96px 46px 1fr 34px";
+    row.innerHTML = `<span class="bl" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"${title ? ` title="${title}"` : ""}>${label}</span>
+      <span class="rm-stat" data-dev="${dev}" title="逸脱の出現率(現状値)">–</span>
+      <input type="range" min="0" max="${max}" step="0.05" data-wpath="${path}">
+      <span class="wv" data-wv="${path}"></span>`;
+    const slider = row.querySelector("input");
+    const wpath = path.split(".");
+    slider.value = getP(state.weights, wpath);
+    slider.addEventListener("input", () => {
+      setP(state.weights, wpath, parseFloat(slider.value));
+      onWeightsChanged();
+    });
+    box.appendChild(row);
+  };
+
+  FINGER_ORDER.forEach((f) => {
+    if (f === "LI" || f === "RI") {
+      addRow(`roll_move.${f}_top`, `${f} 上段`, `${f}_top`);
+      addRow(`roll_move.${f}_stretch`, `${f} 内側stretch`, `${f}_stretch`);
+      addRow(`roll_move.${f}_bottom`, `${f} 下段`, `${f}_bottom`);
+    } else {
+      addRow(`roll_move.${f}`, `${f} 上段`, f);
+    }
+  });
+  // はさみ(中指上段×人差し下段の同手連続)加算。roll_move とは別枠のペア罰。
+  addRow("vb_scissor", "はさみ加算", "scissor", 6, "中指上段×人差し下段の同手連続(はさみ)への加算");
+}
+
 // ================= 計算 =================
 function recomputeLocal() {
   state.metrics = computeMetrics(state.layout, state.ngram, state.weights);
@@ -394,12 +486,16 @@ function renderAll() {
   renderMetrics();
   renderWeightValues();
   renderDetailPanel();
+  renderFlowExample();
   renderIter();
 }
 
 function renderGrid() {
   const moraKeys = buildMoraKeys(state.layout);
   const neighbors = computeNeighbors(moraKeys);
+  // タイピング練習の現在かなの行列スロット(2キーのモーラのみ)。
+  const tKeys = state.typingKana ? moraKeys[state.typingKana] : null;
+  const tSlot = tKeys && tKeys.length === 2 ? tKeys[0] + tKeys[1] : null;
   for (const slot of MAT_SLOTS) {
     const cell = cellEls[slot];
     const kana = state.layout.mat[slot];
@@ -413,21 +509,28 @@ function renderGrid() {
     cell.classList.toggle("rare", isRare(kana));
     const [k0, k1] = [slot[0], slot.slice(1)];
     const type = classifyPair(k0, k1);
-    const bothHome = KEYMAP[k0].row === "home" && KEYMAP[k1].row === "home";
+    const bothHome = KEYMAP[k0].row === "home" && KEYMAP[k1].row === "home" && !KEYMAP[k0].stretch && !KEYMAP[k1].stretch;
     cell.classList.toggle("sfb", type === "sfb");
     cell.classList.toggle("repeat", type === "repeat");
     cell.classList.toggle("homehome", bothHome && type !== "sfb" && type !== "repeat");
     cell.classList.toggle("selected", isSelected("mat", slot));
     cell.classList.toggle("neighbor", neighbors.has(slot));
+    cell.classList.toggle("suggest", !!(state.suggest && state.suggest.bestSet.has(slot)));
+    cell.classList.toggle("tweak", !!(state.suggest && state.suggest.tweakSet.has(slot)));
+    cell.classList.toggle("typing-target", slot === tSlot);
   }
 }
 
 function renderSingles() {
+  const moraKeys = buildMoraKeys(state.layout);
+  const tKeys = state.typingKana ? moraKeys[state.typingKana] : null;
+  const tSingle = tKeys && tKeys.length === 1 ? tKeys[0] : null;
   SINGLE_KEYS.forEach((key) => {
     const s = singleEls[key];
     s.querySelector(".v").textContent = state.layout.single[key] || "";
     s.classList.toggle("selected", isSelected("single", key));
     s.classList.toggle("locked", state.lockSingle);
+    s.classList.toggle("typing-target", key === tSingle);
   });
 }
 
@@ -475,16 +578,16 @@ function renderMetrics() {
     if (val) val.textContent = fmtPct(v);
   });
   // 連接内訳(現状値)
-  UNI_TYPES.forEach((t) => {
-    const s = document.querySelector(`[data-uni="${t}"]`);
-    if (s) s.textContent = fmtPct(m.uni[t] || 0);
+  FLOW_TYPES.forEach((t) => {
+    const s = document.querySelector(`[data-flow="${t}"]`);
+    if (s) s.textContent = fmtPct(m.flowRates[t] || 0);
   });
-  BI_TYPES.forEach((t) => {
-    const su = document.querySelector(`[data-biUin="${t}"]`);
-    if (su) su.textContent = fmtPct(m.biUin[t] || 0);
-    const so = document.querySelector(`[data-biOther="${t}"]`);
-    if (so) so.textContent = fmtPct(m.biOther[t] || 0);
-  });
+  // 逸脱スタッツ(現状値)
+  if (m.devRates) {
+    document.querySelectorAll("[data-dev]").forEach((s) => {
+      s.textContent = fmtPct(m.devRates[s.dataset.dev] || 0);
+    });
+  }
 }
 
 function renderWeightValues() {
@@ -502,32 +605,84 @@ function renderWeightValues() {
 function renderDetailPanel() {
   const moraKeys = buildMoraKeys(state.layout);
   const mora = state.selected ? state.selected.mora : null;
-  renderDetail($("detail"), mora, state.ngram, moraKeys);
+  renderDetail($("detail"), mora, state.ngram, moraKeys, state.suggest);
+}
+
+// 例文を現在の配置で打鍵したときの連接分類を可視化(実ストリーム)。
+function renderFlowExample() {
+  const box = $("flowExample");
+  if (!box) return;
+  const moraKeys = buildMoraKeys(state.layout);
+  const { keys, steps } = classifyStream(FLOW_EXAMPLE_MORAS, moraKeys);
+
+  const counts = {};
+  for (const s of steps) if (s.cat !== "none") counts[s.cat] = (counts[s.cat] || 0) + 1;
+
+  let html = `<div class="flowex-sentence">${FLOW_EXAMPLE_TEXT}</div><div class="flowex-stream">`;
+  keys.forEach((k, i) => {
+    const cls = "flowex-key" + (k.key ? "" : " unplaced");
+    const keyText = k.key ? k.key.toLowerCase() : "?";
+    html += `<span class="${cls}"><span class="fk-key">${keyText}</span><span class="fk-mora">${k.mora}</span></span>`;
+    if (i < steps.length) {
+      const cat = steps[i].cat;
+      const meta = FLOW_CAT_META[cat];
+      html += `<span class="flowex-op cat-${cat}" title="${meta ? meta.legend : "未配置"}">${meta ? meta.label : "–"}</span>`;
+    }
+  });
+  html += `</div>`;
+
+  const legend = FLOW_TYPES.map((c) => {
+    const meta = FLOW_CAT_META[c];
+    return `<span class="lg"><i class="cat-${c}"></i>${meta.legend} ${counts[c] || 0}</span>`;
+  }).join("");
+  html += `<div class="flowex-legend">${legend}</div>`;
+
+  box.innerHTML = html;
 }
 
 function renderIter() {
-  const btn = $("btnOptimize");
+  const bo = $("btnOptimize");
+  const bp = $("btnPolish");
+  const mode = state.mode;
   if (state.stopping) {
-    $("iterLabel").textContent = `停止中… ${state.iter.toLocaleString()} 反復`;
-    btn.textContent = "停止中…";
-    btn.classList.remove("running");
-    btn.disabled = true;
+    $("iterLabel").textContent = `停止中… ${state.iter.toLocaleString()}`;
+    bo.textContent = mode === "sa" ? "停止中…" : "最適化を開始";
+    bp.textContent = mode === "polish" ? "停止中…" : "整地（polish）";
+    bo.classList.toggle("running", mode === "sa");
+    bp.classList.toggle("running", mode === "polish");
+    bo.disabled = true;
+    bp.disabled = true;
+  } else if (state.optimizing && mode === "polish") {
+    $("iterLabel").textContent = `整地中… ${state.iter.toLocaleString()} スワップ`;
+    bp.textContent = "整地を停止";
+    bp.classList.add("running");
+    bp.disabled = false;
+    bo.textContent = "最適化を開始";
+    bo.classList.remove("running");
+    bo.disabled = true;
   } else if (state.optimizing) {
     $("iterLabel").textContent = `最適化中… ${state.iter.toLocaleString()} 反復`;
-    btn.textContent = "最適化を停止";
-    btn.classList.add("running");
-    btn.disabled = false;
+    bo.textContent = "最適化を停止";
+    bo.classList.add("running");
+    bo.disabled = false;
+    bp.textContent = "整地（polish）";
+    bp.classList.remove("running");
+    bp.disabled = true;
   } else {
-    $("iterLabel").textContent = state.iter ? `停止（${state.iter.toLocaleString()} 反復）` : "";
-    btn.textContent = "最適化を開始";
-    btn.classList.remove("running");
-    btn.disabled = false;
+    $("iterLabel").textContent = state.iter ? `停止（${state.iter.toLocaleString()}）` : "";
+    bo.textContent = "最適化を開始";
+    bo.classList.remove("running");
+    bo.disabled = false;
+    bp.textContent = "整地（polish）";
+    bp.classList.remove("running");
+    bp.disabled = false;
   }
 }
 
 // ================= ツールバー・最適化 =================
 function wireToolbar() {
   $("btnOptimize").addEventListener("click", toggleOptimize);
+  $("btnPolish").addEventListener("click", togglePolish);
   $("btnReset").addEventListener("click", () => {
     state.layout = defaultLayout();
     onLayoutEdited();
@@ -559,11 +714,15 @@ function ensureWorker() {
       state.iter = msg.iter;
       scheduleRender();
     } else if (msg.type === "stopped") {
+      const finishedMode = state.mode;
       state.optimizing = false;
       state.stopping = false;
+      state.mode = null;
       if (typeof msg.iter === "number") state.iter = msg.iter;
       saveState();
-      renderIter();
+      renderAll();
+      // SA を止めたら自動で polish して仕上げる(SA+polish 併用ワークフロー)。
+      if (finishedMode === "sa") startPolish();
     }
   };
   return worker;
@@ -579,6 +738,7 @@ function scheduleRender() {
     renderSingles();
     renderMetrics();
     renderDetailPanel();
+    renderFlowExample();
     renderIter();
   });
 }
@@ -592,6 +752,7 @@ function toggleOptimize() {
     renderIter();
   } else {
     state.optimizing = true;
+    state.mode = "sa";
     ensureWorker().postMessage({
       type: "start",
       layout: state.layout,
@@ -601,6 +762,35 @@ function toggleOptimize() {
     });
     renderIter();
   }
+}
+
+// 整地(polish): 貪欲局所探索で 2-opt 局所最適まで詰める。SA とは排他。
+function togglePolish() {
+  if (state.stopping) return;
+  if (state.optimizing) {
+    if (state.mode === "polish") {
+      state.stopping = true;
+      if (worker) worker.postMessage({ type: "stop" });
+      renderIter();
+    }
+    return; // SA 実行中は polish ボタンは無効化されているため通常来ない。
+  }
+  startPolish();
+}
+
+// polish を開始する(SA 停止後の自動連鎖からも呼ぶ)。
+function startPolish() {
+  if (state.optimizing) return;
+  state.optimizing = true;
+  state.mode = "polish";
+  ensureWorker().postMessage({
+    type: "polish",
+    layout: state.layout,
+    ngram: state.ngram,
+    weights: state.weights,
+    lockSingle: state.lockSingle,
+  });
+  renderIter();
 }
 
 // ================= import/export ダイアログ =================
@@ -624,7 +814,7 @@ function openExport() {
 }
 
 function openImport() {
-  openDialog("配列をインポート（JSONを貼り付け）", "", "読み込む", (txt) => {
+  openDialog("配列をインポート（ファイル選択 または JSONを貼り付け）", "", "読み込む", (txt) => {
     try {
       state.layout = parseLayoutJSON(txt);
       dlg.close();
@@ -633,6 +823,31 @@ function openImport() {
       alert("読み込みに失敗しました: " + err.message);
     }
   }, false);
+  renderImportExtra();
+}
+
+// ファイル選択でJSONファイルを読み込み、内容をテキストエリアへ反映するUI。
+function renderImportExtra() {
+  const extra = $("ioExtra");
+  extra.innerHTML = "";
+
+  const note = document.createElement("div");
+  note.className = "kc-note";
+  note.textContent = "JSONファイルを選択すると内容が下のテキスト欄に読み込まれます。「読み込む」で反映します。";
+  extra.appendChild(note);
+
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = "application/json,.json";
+  file.addEventListener("change", () => {
+    const f = file.files && file.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => { $("ioText").value = reader.result; };
+    reader.onerror = () => alert("ファイルの読み込みに失敗しました");
+    reader.readAsText(f);
+  });
+  extra.appendChild(file);
 }
 
 function openKarabiner() {
