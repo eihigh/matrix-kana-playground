@@ -9,6 +9,8 @@
 // 発火条件は「日本語入力ソースが有効(input_source_if language ja)」のとき。
 // 第1キーを押してから 0.5秒 以内に第2キーが来なければ pending を 0 に戻す
 // (to_delayed_action)。放置しても状態が固まらないようにするため。
+// また pending 中に無関係キー(Backspace・Enter・矢印など)が来たら即座に
+// pending を 0 に戻す(そのキー自体は通す)。
 
 import { FIRST_KEYS, SECOND_KEYS, SINGLE_KEYS, KEY_CODE } from "./layout.js";
 
@@ -16,6 +18,14 @@ const VAR = "kanachoku_pending";
 
 // 第1キー押下後、この時間内に第2キーが来なければ pending を 0 に戻す(ミリ秒)。
 const PENDING_TIMEOUT_MS = 500;
+
+// pending 中(第1キー押下後)に押されたら状態をリセットする「無関係キー」。
+// 第2キー(かな完成)以外の編集・移動系キー。押されたキー自体は通す(再送出)。
+const RESET_KEYS = [
+  "delete_or_backspace", "delete_forward",
+  "return_or_enter", "escape", "tab", "spacebar",
+  "left_arrow", "right_arrow", "up_arrow", "down_arrow",
+];
 
 // かな → ローマ字(IME にそのまま打鍵させる文字列)。
 // くんれい/ワープロ式ベース。IME により小書き l/x 等は差異があるため要調整。
@@ -75,6 +85,7 @@ const jaCondition = {
   input_sources: [{ language: "ja" }],
 };
 const pendingIs = (v) => ({ type: "variable_if", name: VAR, value: v });
+const pendingUnless = (v) => ({ type: "variable_unless", name: VAR, value: v });
 const setPending = (v) => ({ set_variable: { name: VAR, value: v } });
 
 // layout = { mat, single } から complex modifications JSON オブジェクトを生成。
@@ -134,6 +145,18 @@ export function buildKarabinerJSON(layout, keyCodes) {
       from: { key_code: kc[key] },
       to,
       conditions: [jaCondition, pendingIs(0)],
+    });
+  }
+
+  // 3) pending 中(≠0)に無関係キー(Backspace 等)が来たら状態をリセット。
+  //    第2キー(完成ルール)は上で先に処理されるのでここには来ない。
+  //    押されたキー自体はそのまま通す(再送出)。
+  for (const rk of RESET_KEYS) {
+    manipulators.push({
+      type: "basic",
+      from: { key_code: rk },
+      to: [setPending(0), { key_code: rk }],
+      conditions: [jaCondition, pendingUnless(0)],
     });
   }
 

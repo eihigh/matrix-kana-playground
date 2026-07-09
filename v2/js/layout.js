@@ -56,11 +56,9 @@ export const SINGLE_KANA = ["ん", "い", "う"];
 // 第2キー(20種)。左右で外側→内側の順に並べ、人差し指の拡張キー(内側ホーム/下段)を
 // 中央寄りにまとめる。中央の仕切りを挟んで 下段 V｜M、その外に 内側ホーム G｜H が
 // 来る左右対称の並び。
-//   左: 上段 Q W E R → ホーム A S D F G → 下段 V
-//   右: 下段 M → 内側ホーム H → ホーム J K L ; → 上段 U I O P
 export const SECOND_KEYS = [
-  "Q", "W", "E", "R", "A", "S", "D", "F", "G", "V",
-  "M", "H", "J", "K", "L", ";", "U", "I", "O", "P",
+  "Q", "W", "E", "R", "A", "S", "D", "F", "V", "G",
+  "H", "M", "J", "K", "L", ";", "U", "I", "O", "P",
 ];
 // 第1キー(単打キーを除く13種)。
 export const FIRST_KEYS = SECOND_KEYS.filter((k) => !SINGLE_KEYS.includes(k));
