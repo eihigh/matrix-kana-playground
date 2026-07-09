@@ -7,7 +7,7 @@
 // pending と一致して「第1キー+第2キー」のかなを IME にローマ字送出する。
 // 単打キー(F/J/K)は待機中のみ う/い/ん を直接送出する。
 // 発火条件は「日本語入力ソースが有効(input_source_if language ja)」のとき。
-// 第1キーを押してから 0.5秒 以内に第2キーが来なければ pending を 0 に戻す
+// 第1キーを押してから 1秒 以内に第2キーが来なければ pending を 0 に戻す
 // (to_delayed_action)。放置しても状態が固まらないようにするため。
 // また pending 中に無関係キー(Backspace・Enter・矢印など)が来たら即座に
 // pending を 0 に戻す(そのキー自体は通す)。
@@ -17,7 +17,7 @@ import { FIRST_KEYS, SECOND_KEYS, SINGLE_KEYS, KEY_CODE } from "./layout.js";
 const VAR = "kanachoku_pending";
 
 // 第1キー押下後、この時間内に第2キーが来なければ pending を 0 に戻す(ミリ秒)。
-const PENDING_TIMEOUT_MS = 500;
+const PENDING_TIMEOUT_MS = 1000;
 
 // pending 中(第1キー押下後)に押されたら状態をリセットする「無関係キー」。
 // 第2キー(かな完成)以外の編集・移動系キー。押されたキー自体は通す(再送出)。
@@ -118,7 +118,7 @@ export function buildKarabinerJSON(layout, keyCodes) {
   }
 
   // 2) 第1キーの押下(pending=0 → 出力せず pending=i)。
-  //    0.5秒以内に第2キーが来なければ to_delayed_action で pending を 0 に戻す。
+  //    1秒以内に第2キーが来なければ to_delayed_action で pending を 0 に戻す。
   for (const f of FIRST_KEYS) {
     manipulators.push({
       type: "basic",
