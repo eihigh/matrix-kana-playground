@@ -14,7 +14,7 @@ export function defaultWeights() {
   return {
     w_effort: 1.0,
     w_order: 0.0,
-    w_flow: 1.4,      // 連接分類と距離重み付きSFB/SFSをまとめた重み
+    w_flow: 1.3,      // 連接分類と距離重み付きSFB/SFSをまとめた重み
     key_effort: {
       Q: 3.0, W: 1.45, E: 1.24, R: 1.15,
       A: 1.27, S: 1.15, D: 0.94, F: 0.85, G: 1.15, V: 1.15,
@@ -23,12 +23,12 @@ export function defaultWeights() {
     },
     // 連接ペナルティ。good/bad redirect/roll はそれぞれ独立に調整できる。
     pen_flow: {
-      goodRedirect: 1.0,
-      badRedirect: 2.0,
+      goodRedirect: 1.1,
+      badRedirect: 1.5,
       goodRoll: 0.0,
       badRoll: 1.5,
-      alt: 1.0,
-      repeat: 1.5,
+      alt: 0.8,
+      repeat: 3.0,
       sfb: 5.0,
       sfs: 1.5,
     },
