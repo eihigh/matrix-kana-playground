@@ -9,8 +9,9 @@ import {
   isGoodRedirect,
   isGoodRoll,
 } from "./metrics.js";
-import { SECOND_KEYS } from "./layout.js";
+import { FIRST_KEYS, MAT_SLOTS, SECOND_KEYS, SINGLE_KEYS, buildMoraKeys, defaultLayout } from "./layout.js";
 import { textToMoras } from "./romaji.js";
+import { normalizeLayout } from "./storage.js";
 
 function classifyKeys(physicalKeys) {
   const moras = physicalKeys.map((_, index) => String(index));
@@ -138,6 +139,31 @@ test("キー使用率: 全20キーが独立したweightを持つ", () => {
   for (const removed of ["w_top", "w_index_stretch", "w_index_bottom", "finger_effort"]) {
     assert.equal(Object.hasOwn(weights, removed), false, removed);
   }
+});
+
+test("単打は「ん・い」の2つで、「う」は行列の2打にする", () => {
+  const layout = defaultLayout();
+  const moraKeys = buildMoraKeys(layout);
+
+  assert.deepEqual(SINGLE_KEYS, ["F", "J"]);
+  assert.equal(FIRST_KEYS.length, 18);
+  assert.equal(MAT_SLOTS.length, 360);
+  assert.deepEqual(layout.single, { F: "ん", J: "い" });
+  assert.equal(moraKeys["う"].length, 2);
+});
+
+test("旧F/J/K単打レイアウトから「う」を行列へ移行する", () => {
+  const legacy = defaultLayout();
+  for (const slot of MAT_SLOTS) {
+    if (legacy.mat[slot] === "う") legacy.mat[slot] = "";
+  }
+  legacy.single = { F: "う", J: "い", K: "ん" };
+  const migrated = normalizeLayout(legacy);
+  const moraKeys = buildMoraKeys(migrated);
+
+  assert.deepEqual(new Set(Object.values(migrated.single)), new Set(["ん", "い"]));
+  assert.equal(moraKeys["う"].length, 2);
+  assert.equal(Object.hasOwn(migrated.single, "K"), false);
 });
 
 test("キー使用率: キーごとの使用率とweightからeffortを計算する", () => {

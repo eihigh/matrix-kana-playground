@@ -49,9 +49,9 @@ export const KEY_CODE = {
   "M": "m",
 };
 
-// 単打キー(3つ)。ここには う・い・ん のみ配置(行列には出ない)。
-export const SINGLE_KEYS = ["F", "J", "K"];
-export const SINGLE_KANA = ["ん", "い", "う"];
+// 単打キー(2つ)。ここには ん・い のみ配置(行列には出ない)。
+export const SINGLE_KEYS = ["F", "J"];
+export const SINGLE_KANA = ["ん", "い"];
 
 // 第2キー(20種)。左右で外側→内側の順に並べ、人差し指の拡張キー(内側ホーム/下段)を
 // 中央寄りにまとめる。中央の仕切りを挟んで 下段 V｜M、その外に 内側ホーム G｜H が
@@ -60,10 +60,10 @@ export const SECOND_KEYS = [
   "Q", "W", "E", "R", "A", "S", "D", "F", "V", "G",
   "H", "M", "J", "K", "L", ";", "U", "I", "O", "P",
 ];
-// 第1キー(単打キーを除く13種)。
+// 第1キー(単打キーを除く18種)。
 export const FIRST_KEYS = SECOND_KEYS.filter((k) => !SINGLE_KEYS.includes(k));
 
-// 行列スロット(第1キー × 第2キー = 13×16 = 208)。id は 2文字連結。
+// 行列スロット(第1キー × 第2キー = 18×20 = 360)。id は 2文字連結。
 export const MAT_SLOTS = [];
 for (const f of FIRST_KEYS) {
   for (const s of SECOND_KEYS) {
@@ -73,7 +73,7 @@ for (const f of FIRST_KEYS) {
 
 // 行列に配置しうるモーラ集合(単打を除く)。かな直では「うぉ」を追加。
 export const KANA_LIST = [
-  "あ", "え", "お",
+  "あ", "う", "え", "お",
   "か", "き", "く", "け", "こ",
   "さ", "し", "す", "せ", "そ",
   "た", "ち", "つ", "て", "と",
@@ -124,7 +124,7 @@ export function keyDist(k1, k2) {
 }
 
 // あるモーラを打つ物理キー列を返す(行列は2キー、単打は1キー)。
-// layout = { mat: {slotId: kana}, single: {F,J,K: kana} }。
+// layout = { mat: {slotId: kana}, single: {F,J: kana} }。
 export function buildMoraKeys(layout) {
   const moraKeys = {};
   for (const slot of MAT_SLOTS) {
@@ -139,7 +139,7 @@ export function buildMoraKeys(layout) {
 }
 
 // デフォルト配列: KANA_LIST を行列スロットに順番に敷き詰め、余りは空。
-// 単打は F=ん, J=い, K=う。
+// 単打は F=ん, J=い。「う」は行列に配置する。
 export function defaultLayout() {
   const mat = {};
   MAT_SLOTS.forEach((slot, i) => {

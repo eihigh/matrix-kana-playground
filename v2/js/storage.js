@@ -1,8 +1,37 @@
 // レイアウトと重みの import/export / localStorage 保存。
 
-import { MAT_SLOTS, SINGLE_KEYS, cloneLayout } from "./layout.js";
+import { MAT_SLOTS, SINGLE_KEYS, SINGLE_KANA } from "./layout.js";
 
 const LS_KEY = "kanachoku_v2";
+
+// 旧F/J/K単打レイアウトを含む入力を、F/J単打＋「う」行列配置へ正規化する。
+export function normalizeLayout(layout) {
+  const mat = Object.fromEntries(MAT_SLOTS.map((slot) => [slot, layout?.mat?.[slot] || ""]));
+  for (const slot of MAT_SLOTS) {
+    if (SINGLE_KANA.includes(mat[slot])) mat[slot] = "";
+  }
+  if (!Object.values(mat).includes("う")) {
+    const emptySlot = MAT_SLOTS.find((slot) => !mat[slot]);
+    if (emptySlot) mat[emptySlot] = "う";
+  }
+
+  const single = {};
+  const used = new Set();
+  for (const key of SINGLE_KEYS) {
+    const kana = layout?.single?.[key];
+    if (SINGLE_KANA.includes(kana) && !used.has(kana)) {
+      single[key] = kana;
+      used.add(kana);
+    } else {
+      single[key] = "";
+    }
+  }
+  const missing = SINGLE_KANA.filter((kana) => !used.has(kana));
+  for (const key of SINGLE_KEYS) {
+    if (!single[key]) single[key] = missing.shift() || "";
+  }
+  return { mat, single };
+}
 
 // レイアウト＋メタ情報を JSON 文字列にする。
 export function exportLayoutJSON(layout, metrics) {
@@ -14,7 +43,7 @@ export function exportLayoutJSON(layout, metrics) {
       sfbRate: metrics?.sfbRate,
       sfsRate: metrics?.sfsRate,
       flow: metrics?.flow,
-      note: "かな直 v2 配列。mat=行列(17×20=340), single=単打(F/J/K)。人差し指拡張版(G/H/V/M)。",
+      note: "かな直 v2 配列。mat=行列(18×20=360), single=単打(F/J)。人差し指拡張版(G/H/V/M)。",
     },
     mat: { ...layout.mat },
     single: { ...layout.single },
@@ -36,7 +65,7 @@ export function parseLayoutJSON(text) {
     for (const slot of MAT_SLOTS) mat[slot] = obj[slot] || "";
     for (const key of SINGLE_KEYS) single[key] = obj[key] || "";
   }
-  return { mat, single };
+  return normalizeLayout({ mat, single });
 }
 
 export function saveLocal(data) {
@@ -57,7 +86,7 @@ export function loadLocal() {
     const obj = JSON.parse(raw);
     if (!obj.layout) return null;
     return {
-      layout: cloneLayout(obj.layout),
+      layout: normalizeLayout(obj.layout),
       weights: obj.weights || null,
       lockSingle: !!obj.lockSingle,
       keyCodes: obj.keyCodes || null,

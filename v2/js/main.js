@@ -21,7 +21,7 @@ const state = {
   selected: null, // { kind:"mat"|"single", id, mora }
   optimizing: false,
   stopping: false, // 停止要求後、ワーカーが実際に止まるまでの間
-  lockSingle: false, // 単打キー(F/J/K)を固定して最適化で動かさない
+  lockSingle: false, // 単打キー(F/J)を固定して最適化で動かさない
   keyCodes: { ...KEY_CODE }, // Karabiner出力のFROM側key_code(ベース配列に合わせて変更可)
   suggest: null, // 選択かなの配置サジェスト { mora, curSlot, list, bestSet }
   mode: null, // 実行中の最適化モード: null | "sa" | "polish"
@@ -232,7 +232,7 @@ function buildGrid() {
     grid.appendChild(el("div", "ghead" + (f === SEP_KEY ? " sep-l" : ""), f));
   }
 
-  // 本体: 行 = 第2キー、列 = 第1キー。単打キー(F/J/K)の列は無効セルとして描画する。
+  // 本体: 行 = 第2キー、列 = 第1キー。単打キー(F/J)の列は無効セルとして描画する。
   SECOND_KEYS.forEach((s) => {
     grid.appendChild(
       el("div", "rhead" + (s === SEP_KEY ? " sep-t" : ""), s)

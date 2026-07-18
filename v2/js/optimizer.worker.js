@@ -19,7 +19,7 @@ let best = null;      // これまでの最良
 let bestMetrics = null;
 let running = false;
 let iter = 0;
-let lockSingle = false; // 単打キー(F/J/K)を固定して最適化で動かさない
+let lockSingle = false; // 単打キー(F/J)を固定して最適化で動かさない
 let maxFreq = 1;        // 行列上のかなの最大頻度(重み付き選択の正規化用)
 
 // polish(貪欲局所探索)用の状態。

@@ -5,7 +5,7 @@
 //   1..13    = 直前に押された第1キー(どれか)
 // を表す。第1キーを押すと出力せず pending をセットし、続く任意キーが
 // pending と一致して「第1キー+第2キー」のかなを IME にローマ字送出する。
-// 単打キー(F/J/K)は待機中のみ う/い/ん を直接送出する。
+// 単打キー(F/J)は待機中のみ ん/い を直接送出する。「う」は2打で送出する。
 // 発火条件は「日本語入力ソースが有効(input_source_if language ja)」のとき。
 // 第1キーを押してから 1秒 以内に第2キーが来なければ pending を 0 に戻す
 // (to_delayed_action)。放置しても状態が固まらないようにするため。
@@ -134,7 +134,7 @@ export function buildKarabinerJSON(layout, keyCodes) {
     });
   }
 
-  // 単打キー(pending=0 → う/い/ん を直接送出)。
+  // 単打キー(pending=0 → ん/い を直接送出)。
   for (const key of SINGLE_KEYS) {
     const kana = layout.single[key];
     const to = [];

@@ -15,7 +15,7 @@ const Break = "\x00"
 // KanaList は行列に配置しうるモーラ単位の集合(単打を除く)。
 // optimize.py / build_ngram.py の KANA_LIST に「うぉ」を追加したもの。
 var KanaList = []string{
-	"あ", "え", "お",
+	"あ", "う", "え", "お",
 	"か", "き", "く", "け", "こ",
 	"さ", "し", "す", "せ", "そ",
 	"た", "ち", "つ", "て", "と",
@@ -49,8 +49,8 @@ var KanaList = []string{
 	"っ", "ー", "、", "。",
 }
 
-// SingleKana は単打キー(F・J・K)に置くモーラ。
-var SingleKana = []string{"ん", "い", "う"}
+// SingleKana は単打キー(F・J)に置くモーラ。
+var SingleKana = []string{"ん", "い"}
 
 // validUnits は KanaList と SingleKana の和集合。
 var validUnits = func() map[string]bool {

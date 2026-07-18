@@ -60,7 +60,7 @@
   .slot.tweak{outline:1.5px dashed rgba(138,163,201,.75);outline-offset:-3px}
   /* タイピング練習: 今打つべきかなの位置を発光 */
   .slot.typing-target{box-shadow:0 0 0 3px var(--accent),0 0 14px 4px rgba(90,169,230,.85);z-index:5;animation:tp-glow .6s ease-in-out infinite}
-  /* 無効セル(F/J/K行): 色ルールは適用しつつ斜線ハッチを重ねて操作不可を示す */
+  /* 無効セル(F/J列): 色ルールは適用しつつ斜線ハッチを重ねて操作不可を示す */
   .slot.invalid{cursor:not-allowed}
   .slot.invalid:hover{background:var(--cell)}
   .slot.invalid.homehome:hover{background:rgba(126,231,135,.15)}
@@ -219,7 +219,7 @@
 <header>
   <h1>かな直 Playground <span style="color:var(--muted);font-size:13px">v2</span></h1>
   <p>上段 <code>Q W E R</code> / <code>U I O P</code>・ホーム <code>A S D F G</code> / <code>H J K L ;</code>・下段 <code>V</code> / <code>M</code> の計20キー。人差し指は内側ホーム(<code>G</code> / <code>H</code>)と下段(<code>V</code> / <code>M</code>)を追加。2打の組み合わせでかなを入力。</p>
-  <p>単打 <b>う・い・ん</b> は <code>F</code> <code>J</code> <code>K</code>。第1キー17種 × 第2キー20種 → <b>340マス</b>。セルを入れ替えると指標が即時に再計算されます。</p>
+  <p>単打 <b>ん・い</b> は <code>F</code> <code>J</code>。「う」は2打。第1キー18種 × 第2キー20種 → <b>360マス</b>。セルを入れ替えると指標が即時に再計算されます。</p>
 </header>
 
 <div class="panel typing-top">
@@ -242,7 +242,7 @@
       </div>
       <div id="grid" class="grid"></div>
       <div id="singles" class="singles"></div>
-      <label class="single-lock"><input type="checkbox" id="lockSingle"> 単打キー（F/J/K）を固定して最適化で動かさない</label>
+      <label class="single-lock"><input type="checkbox" id="lockSingle"> 単打キー（F/J）を固定して最適化で動かさない</label>
       <div class="legend">
         <span><i style="background:rgba(230,90,126,.55)"></i>SFB（同指で別キー連打）</span>
         <span><i style="background:rgba(232,201,90,.6)"></i>同キー連打</span>
