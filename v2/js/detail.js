@@ -1,19 +1,19 @@
 // 文字詳細パネル: 選択したモーラの「使用率（順位）」をコンパクトに、
 // 前後を区別せず 該当モーラを含む bigram を「<2モーラ文字列> 割合」で一覧する。
-// 各 bigram は現在の配置での連接分類でハイライト:
-//   すべて roll(内/外) → 良い / redirect か sfb を含む → 悪い。
+// 各 bigram は現在の配置での連接分類でハイライトする。
 
 import { classifyStream } from "./metrics.js";
 
 // bigram(m1,m2)を現在の配置で分類し、"good" / "bad" / "" を返す。
-//   good: 全連接が roll(inroll/outroll)。bad: redirect か sfb を含む。
+//   good: 全連接が good roll/redirect。bad: bad roll/redirect か sfb を含む。
 //   未配置キーを含む場合は評価不能として ""。
 function classifyBigram(m1, m2, moraKeys) {
   const { steps } = classifyStream([m1, m2], moraKeys);
   if (steps.length === 0) return "";
-  if (steps.some((s) => s.cat === "none")) return "";
-  if (steps.some((s) => s.cat === "redirect" || s.cat === "sfb")) return "bad";
-  if (steps.every((s) => s.cat === "inroll" || s.cat === "outroll")) return "good";
+  const categories = steps.flatMap((step) => step.cats || [step.cat]);
+  if (categories.includes("none")) return "";
+  if (categories.some((cat) => cat === "badRedirect" || cat === "badRoll" || cat === "sfb" || cat === "sfs")) return "bad";
+  if (categories.every((cat) => cat === "goodRedirect" || cat === "goodRoll")) return "good";
   return "";
 }
 

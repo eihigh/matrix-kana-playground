@@ -115,19 +115,14 @@
   .breakdown{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 16px;margin-top:8px;font-size:12px}
   .breakdown .bk{display:flex;justify-content:space-between;border-bottom:1px dashed var(--border);padding:2px 0}
   .breakdown .bk .l{color:var(--muted)}
-  /* 指の使用率(現状値)＋ effort 重みスライダーを併設 */
+  /* キーの使用率(現状値)＋ effort 重みスライダーを併設 */
   .load-row{display:grid;grid-template-columns:30px 1fr 46px 1fr 30px;align-items:center;gap:6px;padding:2px 0}
   .load-row .bl{font-size:12px;color:var(--muted)}
   .load-row .bv{text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--accent2);font-weight:600}
   .load-row .wv{text-align:right;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
   .load-row input[type=range]{width:100%}
-  .rm-row{display:grid;grid-template-columns:30px 1fr 34px;align-items:center;gap:6px;padding:2px 0}
-  .rm-row .bl{font-size:12px;color:var(--muted)}
-  .rm-row .wv{text-align:right;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
-  .rm-row .rm-stat{font-size:10.5px;color:var(--accent2);font-variant-numeric:tabular-nums;text-align:right}
-  .rm-row input[type=range]{width:100%}
   /* 連接内訳(現状値)＋ ペナルティ重みスライダーを併設 */
-  .bk{display:grid;grid-template-columns:52px 54px 1fr;align-items:center;gap:6px;padding:3px 0;border-bottom:1px dashed var(--border);font-size:12px}
+  .bk{display:grid;grid-template-columns:90px 54px 1fr;align-items:center;gap:6px;padding:3px 0;border-bottom:1px dashed var(--border);font-size:12px}
   .bk:last-child{border-bottom:none}
   .bk .l{color:var(--muted)}
   .bk .bv2{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:var(--accent2)}
@@ -139,21 +134,28 @@
   .sw input[type=range]{width:100%}
 
   /* 例文の flow 分類(常時表示) */
-  .flowex-sentence{font-size:14px;font-weight:600;margin-bottom:8px}
+  .flowex-label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+  .flowex-input{display:block;width:100%;min-height:58px;resize:vertical;margin-bottom:10px;
+    background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;
+    padding:8px 10px;font:inherit;line-height:1.5}
+  .flowex-input:focus{outline:none;border-color:var(--accent)}
   .flowex-stream{display:flex;flex-wrap:wrap;align-items:center;gap:3px;line-height:1.9}
   .flowex-key{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;
     min-width:22px;padding:2px 5px;border-radius:5px;background:var(--panel2);border:1px solid var(--border)}
   .flowex-key .fk-key{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
   .flowex-key .fk-mora{font-size:9.5px;color:var(--muted)}
   .flowex-key.unplaced{opacity:.5}
+  .flowex-ops{display:inline-flex;flex-direction:column;align-items:stretch;gap:2px}
   .flowex-op{display:inline-flex;align-items:center;font-size:10px;padding:2px 6px;border-radius:9px;color:#0d0f14;font-weight:700}
   .flowex-op.cat-none{background:transparent;color:var(--muted);font-weight:400}
-  .cat-inroll{background:rgba(126,231,135,.85)}
-  .cat-outroll{background:rgba(110,180,240,.85)}
-  .cat-redirect{background:rgba(240,140,70,.92)}
+  .cat-goodRedirect{background:rgba(110,180,240,.85)}
+  .cat-badRedirect{background:rgba(240,140,70,.92)}
+  .cat-goodRoll{background:rgba(126,231,135,.85)}
+  .cat-badRoll{background:rgba(230,90,126,.82);color:#fff}
   .cat-alt{background:rgba(150,160,175,.55);color:var(--text)}
   .cat-repeat{background:rgba(232,201,90,.9)}
   .cat-sfb{background:rgba(230,90,126,.92);color:#fff}
+  .cat-sfs{background:rgba(188,120,230,.9);color:#fff}
   .flowex-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;font-size:11px;color:var(--muted);
     font-variant-numeric:tabular-nums}
   .flowex-legend .lg{display:inline-flex;align-items:center;gap:4px}
@@ -267,24 +269,21 @@
     </div>
 
     <div class="panel">
-      <h2>指の使用率（loads）＋ effort 重み</h2>
+      <h2>キーごとの使用率 ＋ effort 重み</h2>
       <div id="loadBars"></div>
     </div>
 
     <div class="panel">
-      <h2>ロール逸脱の指重み（roll_move｜vbounce用）</h2>
-      <div id="rollMoveBars"></div>
-    </div>
-
-    <div class="panel">
       <h2>連接の内訳 ＋ ペナルティ重み</h2>
-      <div class="subhead">方向つきロール状態機械（bigram駆動）｜ 現状値 ＋ pen_flow 重み。方向は x軸のみ（段跨ぎは vbounce）。inroll/outroll は既定同値、sfb は w_sfb で減点。</div>
+      <div class="subhead">bikey（roll等）と trikey（redirect）は別集計。同時に成立する場合は両方を flow に加算します。</div>
       <div id="flowBreak"></div>
     </div>
 
     <div class="panel">
       <h2>例文の flow 分類</h2>
-      <div class="subhead">現在の配置で例文を打鍵したときの連接分類（実ストリーム）。配置を変えると即時更新。</div>
+      <div class="subhead">bikey と trikey を別々に判定し、該当分類をすべて表示します。日本語・ローマ字を入力できます。</div>
+      <label class="flowex-label" for="flowExampleInput">例文</label>
+      <textarea id="flowExampleInput" class="flowex-input" rows="2" spellcheck="false">ありがとうございます。</textarea>
       <div id="flowExample"></div>
     </div>
   </div>

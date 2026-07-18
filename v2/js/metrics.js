@@ -1,61 +1,41 @@
 // optimize.py の fitness() をブラウザへ移植した指標計算。
-// 連接評価は「方向つきロール状態機械」に統合(pen_flow)。
-// SFB は距離重み(w_sfb)で別計上し、連接では最大減点扱い。
+// 連接評価は good/bad redirect/roll と repeat/alt/sfb に分類する。
+// SFB と SFS は距離重み付きの加算ペナルティとして flow に統合する。
 
 import {
-  FINGER_ORDER, FID, KEYMAP, classifyPair, buildMoraKeys, keyDist,
+  FINGER_ORDER, FID, SECOND_KEYS, KEYMAP, classifyPair, buildMoraKeys, keyDist,
 } from "./layout.js";
 
-// 連接評価の種別(表示・内訳の順序)。sfb は別枠(w_sfb)で減点する。
-export const FLOW_CATS = ["inroll", "outroll", "redirect", "alt", "repeat", "sfb"];
+// flow内訳の分類種別。redirectはrollと同時発生し、SFSは別途距離重み付きで集計する。
+export const FLOW_CATS = ["goodRedirect", "badRedirect", "goodRoll", "badRoll", "alt", "repeat", "sfb"];
 
 // 既定の重み(optimize.py CONFIG に対応。連接は pen_flow へ統合)。
 export function defaultWeights() {
   return {
-    w_top: 1.0,
-    w_index_stretch: 0.2,  // 人差し内側stretch率(G/H の打鍵。R/U は topRatio 側で計上)
-    w_index_bottom: 0.05,  // 人差し下段率(V/M の打鍵)
     w_effort: 1.0,
     w_order: 0.0,
-    w_sfb: 3.0,       // SFB は距離重み付き(keyDist)で計上。連接では最大減点扱い。
-    w_skip: 0.5,      // 同指スキップグラム(1キー飛ばし)のうち非隣接=人差し指の大移動のみ。距離重み。
-    w_vbounce: 0.2,   // ロール逸脱(同手ロールでホームを離れる分を roll_move で計上)
-    w_flow: 1.0,      // 連接(方向つきロール状態機械)の重み
-    finger_effort: {
-      LP: 1.8, LR: 1.7, LM: 1.3, LI: 1.0,
-      RI: 1.0, RM: 1.0, RR: 1.7, RP: 1.8,
+    w_flow: 1.4,      // 連接分類と距離重み付きSFB/SFSをまとめた重み
+    key_effort: {
+      Q: 3.0, W: 1.45, E: 1.24, R: 1.15,
+      A: 1.27, S: 1.15, D: 0.94, F: 0.85, G: 1.15, V: 1.15,
+      U: 1.15, I: 1.15, O: 1.45, P: 3.0,
+      H: 1.15, J: 0.85, K: 0.85, L: 1.15, ";": 1.27, M: 1.15,
     },
-    // vbounce 用: 指がホームを離れて縦/内へ動く負担(逸脱重み)。
-    // 非人差し指は逸脱先が上段のみなので指ごとに1値。
-    // 人差し指だけ上段/内側stretch/下段の3方向に逸脱するので方向別に分ける
-    // (下段は自然で軽く、上段への伸びは重い、など直接調整できる)。
-    roll_move: {
-      LP: 3.2, LR: 2.9, LM: 2.05,
-      RM: 2.0, RR: 2.5, RP: 2.8,
-      LI_top: 1.4, LI_stretch: 1.0, LI_bottom: 0.6,
-      RI_top: 1.4, RI_stretch: 1.0, RI_bottom: 0.6,
-    },
-    // 連接の統合ペナルティ(方向つきロール状態機械)。
-    //   inroll/outroll = 同方向ロール(最良)。方向は x軸のみ、段跨ぎは vbounce が担当。
-    //   redirect       = 同手で方向反転(大幅減点)。
-    //   alt            = 逆手(小減点+方向リセット)。
-    //   repeat         = 同キー連打(小減点+方向維持)。
-    //   sfb は別枠(w_sfb)なので pen_flow には持たない(方向維持)。
-    //   inroll/outroll は区別しない想定だが、調整用に別パラメータで用意(既定は同値)。
+    // 連接ペナルティ。good/bad redirect/roll はそれぞれ独立に調整できる。
     pen_flow: {
-      inroll: 0.0,
-      outroll: 0.0,
-      redirect: 2.0,
-      alt: 0.5,
-      repeat: 0.5,
+      goodRedirect: 1.0,
+      badRedirect: 2.0,
+      goodRoll: 0.0,
+      badRoll: 1.5,
+      alt: 1.0,
+      repeat: 1.5,
+      sfb: 5.0,
+      sfs: 1.5,
     },
-    // はさみ(scissor): 中指上段×人差し下段の同手連続は逆方向に指が開くので加算。
-    // これはペアの組み合わせ罰なので roll_move(単キーの逸脱重み)とは別枠。
-    vb_scissor: 3.0,
   };
 }
 
-// 同手ロールの方向。内側=+1 / 外側=-1(x軸のみ。段跨ぎは vbounce が担当)。
+// 同手ロールの方向。内側=+1 / 外側=-1。
 // ロール(同手・別指)は必ず x が異なるので 0 は返らない。
 function rollDir(a, b) {
   const A = KEYMAP[a], B = KEYMAP[b];
@@ -63,104 +43,100 @@ function rollDir(a, b) {
   return inward ? 1 : -1;
 }
 
-// layout = { mat, single }, ngram = { bigramList }, weights。
-// 指標一式(cost と内訳)を返す。
-// moraKeys を渡すと buildMoraKeys を省略する(サジェスト等の連続評価の高速化用)。
-//
-// ホームキーを離れる分(top/bottom/内側stretch)を逸脱重み roll_move で評価。vbounce の対象。
-// 非人差し指は上段のみなので roll_move[finger]。人差し指は方向別(上段/stretch/下段)。
-function vmoveOf(k, w) {
+const GOOD_ROLL_PAIRS = new Set([
+  "HI:HM", "HI:HR", "HI:HP", "HI:TM", "HI:TR",
+  "HM:HR", "HM:HP", "BI:HM",
+  "HR:HP", "BI:HR", "HR:TM",
+  "BI:HP", "HP:TM", "HP:TR",
+].map((pair) => pair.split(":").sort().join(":")));
+
+function fingerKind(km) { return km.finger[1]; }
+function positionKind(km) {
+  const row = km.row === "home" ? "H" : (km.row === "top" ? "T" : "B");
+  return row + fingerKind(km);
+}
+function isIndex(km) { return fingerKind(km) === "I"; }
+
+// 長い方の指を伸ばす組み合わせを good roll とする。
+// 人差し指内側、および下段人差し指×上段は明示的に bad roll。
+export function isGoodRoll(a, b) {
+  const ka = KEYMAP[a], kb = KEYMAP[b];
+  if (ka.hand !== kb.hand || ka.finger === kb.finger) return false;
+  if ((isIndex(ka) && ka.stretch) || (isIndex(kb) && kb.stretch)) return false;
+  if ((isIndex(ka) && ka.row === "bottom" && kb.row === "top") ||
+      (isIndex(kb) && kb.row === "bottom" && ka.row === "top")) return false;
+  if (ka.row === "top" && kb.row === "top") return true;
+  return GOOD_ROLL_PAIRS.has([positionKind(ka), positionKind(kb)].sort().join(":"));
+}
+
+function isRedirectKey(k) {
   const km = KEYMAP[k];
-  if (km.row === "home" && !km.stretch) return 0;
-  const rm = w.roll_move;
-  if (km.finger === "LI" || km.finger === "RI") {
-    const dir = km.stretch ? "_stretch" : (km.row === "top" ? "_top" : "_bottom");
-    return rm[km.finger + dir];
-  }
-  return rm[km.finger]; // 非人差し指の逸脱先は上段のみ。
+  return isIndex(km) && !km.stretch && (km.row === "home" || km.row === "bottom");
 }
 
-// はさみ(scissor)判定用: 中指上段 / 人差し下段。
-function isMidTop(km) { return km.row === "top" && (km.finger === "LM" || km.finger === "RM"); }
-function isIndexBottom(km) { return km.row === "bottom" && (km.finger === "LI" || km.finger === "RI"); }
-
-// 逸脱スタッツの種別(スライダー並びに一致)。scissor はペア罰。
-export const DEV_CATS = [
-  "LP", "LR", "LM", "LI_top", "LI_stretch", "LI_bottom",
-  "RI_top", "RI_stretch", "RI_bottom", "RM", "RR", "RP", "scissor",
-];
-
-// キー→逸脱スタッツ種別(ホームキーは null)。roll_move のキーと一致する。
-function devCat(km) {
-  if (km.row === "home" && !km.stretch) return null;
-  if (km.finger === "LI" || km.finger === "RI") {
-    return km.finger + (km.stretch ? "_stretch" : (km.row === "top" ? "_top" : "_bottom"));
-  }
-  return km.finger;
-}
-
-function newDev() {
-  const d = {};
-  for (const c of DEV_CATS) d[c] = 0;
-  return d;
+export function isGoodRedirect(a, b, c) {
+  return isRedirectKey(a) || isRedirectKey(b) || isRedirectKey(c);
 }
 
 // 生の集計器(rate 化する前の和)。
 function newAcc() {
   return {
     finger: new Array(8).fill(0),
-    total: 0, top: 0, indexStretch: 0, indexBottom: 0,
-    totalBg: 0, sfb: 0, skip: 0, vbounce: 0, flowSum: 0,
-    cnt: { inroll: 0, outroll: 0, redirect: 0, alt: 0, repeat: 0, sfb: 0 },
-    dev: newDev(),
+    key: Object.fromEntries(SECOND_KEYS.map((key) => [key, 0])),
+    total: 0,
+    totalBg: 0, sfb: 0, sfs: 0, flowSum: 0,
+    cnt: {
+      goodRedirect: 0, badRedirect: 0, goodRoll: 0, badRoll: 0,
+      alt: 0, repeat: 0, sfb: 0,
+    },
   };
 }
 
 function cloneAcc(a) {
   return {
     finger: a.finger.slice(),
-    total: a.total, top: a.top, indexStretch: a.indexStretch, indexBottom: a.indexBottom,
-    totalBg: a.totalBg, sfb: a.sfb, skip: a.skip, vbounce: a.vbounce, flowSum: a.flowSum,
+    key: { ...a.key },
+    total: a.total,
+    totalBg: a.totalBg, sfb: a.sfb, sfs: a.sfs, flowSum: a.flowSum,
     cnt: { ...a.cnt },
-    dev: { ...a.dev },
   };
 }
 
 // 1つの bigram (m1,m2,freq) の寄与を acc に sign(+1/-1)で加減算する。
 // per-key 指標は第2モーラ(k2)のみ、連接は境界ペア+ m2内部ペアのみ計上。
-function accumBigram(acc, k1, k2, freq, w, pf, sign) {
+// bikeyのroll等とtrikeyのredirectは別集計で、同じ連接に両方成立すれば両方加算する。
+function accumBigram(acc, k1, k2, freq, pf, sign) {
   const f = sign * freq;
   for (const k of k2) {
     const km = KEYMAP[k];
     acc.total += f;
-    if (km.row === "top") acc.top += f;
-    if (km.stretch) acc.indexStretch += f;
-    if (km.row === "bottom") acc.indexBottom += f;
+    acc.key[k] += f;
     acc.finger[FID[km.finger]] += f;
   }
 
   const run = k1.concat(k2);
   const L1 = k1.length;
-  let curDir = 0; // 0 = 未確立
+  let curDir = 0; // 直前の連接が roll のときだけ方向を保持
   for (let i = 0; i < run.length - 1; i++) {
     const a = run[i], b = run[i + 1];
     const t = classifyPair(a, b);
     const owned = i >= L1 - 1; // 境界ペア(i=L1-1)と m2内部ペア(i>=L1)のみ計上
 
-    let cat, pen = 0;
+    let cat, redirectCat = null, pen = 0;
     if (t === "repeat") {
-      cat = "repeat"; pen = pf.repeat;       // 方向維持
+      cat = "repeat"; pen = pf.repeat; curDir = 0;
     } else if (t === "sfb") {
-      cat = "sfb";                            // 別枠(w_sfb)。方向維持
+      cat = "sfb"; curDir = 0;
     } else if (t === "alt") {
       cat = "alt"; pen = pf.alt; curDir = 0;  // 方向リセット
     } else { // roll
       const d = rollDir(a, b);
+      cat = isGoodRoll(a, b) ? "goodRoll" : "badRoll";
+      pen = pf[cat];
       if (curDir !== 0 && d === -curDir) {
-        cat = "redirect"; pen = pf.redirect;  // 方向反転
-      } else {
-        cat = d > 0 ? "inroll" : "outroll";
-        pen = d > 0 ? pf.inroll : pf.outroll;
+        const good = isGoodRedirect(run[i - 1], a, b);
+        redirectCat = good ? "goodRedirect" : "badRedirect";
+        pen += pf[redirectCat];
       }
       curDir = d;
     }
@@ -168,53 +144,44 @@ function accumBigram(acc, k1, k2, freq, w, pf, sign) {
     if (owned) {
       acc.totalBg += f;
       acc.cnt[cat] += f;
-      if (t === "sfb") acc.sfb += f * keyDist(a, b);
-      else acc.flowSum += f * pen;
-      if (t === "roll") {
-        let vb = vmoveOf(a, w) + vmoveOf(b, w);
-        // 中指上段×人差し下段の同手連続(はさみ)は逆方向開きで加算。
-        const ka = KEYMAP[a], kb = KEYMAP[b];
-        const scissor = (isMidTop(ka) && isIndexBottom(kb)) || (isMidTop(kb) && isIndexBottom(ka));
-        if (scissor) vb += w.vb_scissor;
-        acc.vbounce += f * vb;
-        // 逸脱スタッツ(種別ごとの出現頻度)。
-        const ca = devCat(ka); if (ca) acc.dev[ca] += f;
-        const cb = devCat(kb); if (cb) acc.dev[cb] += f;
-        if (scissor) acc.dev.scissor += f;
+      if (redirectCat) acc.cnt[redirectCat] += f;
+      if (t === "sfb") {
+        const distance = keyDist(a, b);
+        acc.sfb += f * distance;
+        acc.flowSum += f * distance * pf.sfb;
+      } else {
+        acc.flowSum += f * pen;
       }
     }
   }
 
-  // same-finger skipgram(1キー飛ばし)。非隣接(同指で keyDist>1)のみ計上。
-  // 非人差し指は同指が上段+ホームの隣接(dist=1)のみなので、この条件は
-  // 実質人差し指の大移動(R↔V, R↔G, G↔V, U↔M 等)だけを拾う。
+  // same-finger skipgram(1キー飛ばし)。距離1以上を距離重み付きで計上。
   // m1≤キーなので skip の2番目は必ず m2 内(=第2モーラ所有)となり二重カウントしない。
   for (let i = 0; i + 2 < run.length; i++) {
     const a = run[i], c = run[i + 2];
     if (KEYMAP[a].finger === KEYMAP[c].finger) {
       const d = keyDist(a, c);
-      if (d > 1) acc.skip += f * d;
+      if (d >= 1) {
+        acc.sfs += f * d;
+        acc.flowSum += f * d * pf.sfs;
+      }
     }
   }
 }
 
 // 集計器から指標一式(cost と内訳)を導出する。総和(total/totalBg)を分母に rate 化。
 function costFromAcc(acc, w) {
-  const { finger, total, top, indexStretch, indexBottom, totalBg, sfb, skip, vbounce, flowSum, cnt } = acc;
+  const { finger, key, total, totalBg, sfb, sfs, flowSum, cnt } = acc;
   if (total <= 0 || totalBg <= 0) return { cost: 1e9, valid: false };
 
   const loads = finger.map((v) => v / total);
-  const topRatio = top / total;
-  const indexStretchRate = indexStretch / total;
-  const indexBottomRate = indexBottom / total;
+  const keyLoads = Object.fromEntries(SECOND_KEYS.map((physicalKey) => [physicalKey, key[physicalKey] / total]));
   const sfbRate = sfb / totalBg;
-  const skipRate = skip / totalBg;
-  const vbounceRate = vbounce / totalBg;
+  const sfsRate = sfs / totalBg;
   const flow = flowSum / totalBg;
 
-  const fe = w.finger_effort;
   let effort = 0;
-  for (let i = 0; i < 8; i++) effort += fe[FINGER_ORDER[i]] * loads[i];
+  for (const physicalKey of SECOND_KEYS) effort += w.key_effort[physicalKey] * keyLoads[physicalKey];
 
   const handPen = (p, r, m, idx) => {
     const mi = (m + idx) / 2;
@@ -225,31 +192,20 @@ function costFromAcc(acc, w) {
     handPen(loads[FID.RP], loads[FID.RR], loads[FID.RM], loads[FID.RI]);
 
   const cost =
-    w.w_top * topRatio +
-    w.w_index_stretch * indexStretchRate +
-    w.w_index_bottom * indexBottomRate +
     w.w_effort * effort +
     w.w_order * orderPen +
-    w.w_sfb * sfbRate +
-    w.w_skip * skipRate +
-    w.w_vbounce * vbounceRate +
     w.w_flow * flow;
 
   const flowRates = {};
   for (const c of FLOW_CATS) flowRates[c] = totalBg > 0 ? (cnt[c] || 0) / totalBg : 0;
-
-  const loadsObj = {};
-  for (let i = 0; i < 8; i++) loadsObj[FINGER_ORDER[i]] = loads[i];
-
-  const devRates = {};
-  for (const c of DEV_CATS) devRates[c] = totalBg > 0 ? (acc.dev[c] || 0) / totalBg : 0;
+  flowRates.sfb = sfbRate;
+  flowRates.sfs = sfsRate;
 
   return {
     valid: true, cost,
-    topRatio, indexStretchRate, indexBottomRate,
-    effort, orderPen, sfbRate, vbounceRate, flow,
-    flowRates, loads: loadsObj,
-    skipRate, devRates,
+    effort, orderPen, sfbRate, flow,
+    flowRates, keyLoads,
+    sfsRate,
   };
 }
 
@@ -268,7 +224,7 @@ export function computeMetrics(layout, ngram, weights, moraKeys) {
     const k1 = moraKeys[m1];
     const k2 = moraKeys[m2];
     if (!k1 || !k2) continue;
-    accumBigram(acc, k1, k2, freq, w, pf, 1);
+    accumBigram(acc, k1, k2, freq, pf, 1);
   }
   return costFromAcc(acc, w);
 }
@@ -296,7 +252,7 @@ export function suggestPlacements(ngram, weights, moraKeys, mora, curSlot, candi
     const k1 = moraKeys[m1];
     const k2 = moraKeys[m2];
     if (!k1 || !k2) continue;
-    accumBigram(base, k1, k2, freq, w, pf, 1);
+    accumBigram(base, k1, k2, freq, pf, 1);
   }
   const baseCost = costFromAcc(base, w).cost;
 
@@ -314,11 +270,11 @@ export function suggestPlacements(ngram, weights, moraKeys, mora, curSlot, candi
     for (const e of affected) {
       const [m1, m2, freq] = e;
       const ok1 = moraKeys[m1], ok2 = moraKeys[m2];
-      if (ok1 && ok2) accumBigram(acc, ok1, ok2, freq, w, pf, -1); // 旧配置を除去
+      if (ok1 && ok2) accumBigram(acc, ok1, ok2, freq, pf, -1); // 旧配置を除去
       // 新配置のキー: mora→slotKeys, occ→curKeys, それ以外は現状。
       const nk1 = m1 === mora ? slotKeys : (m1 === occ ? curKeys : ok1);
       const nk2 = m2 === mora ? slotKeys : (m2 === occ ? curKeys : ok2);
-      if (nk1 && nk2) accumBigram(acc, nk1, nk2, freq, w, pf, 1);   // 新配置を加算
+      if (nk1 && nk2) accumBigram(acc, nk1, nk2, freq, pf, 1);   // 新配置を加算
     }
     const cost = costFromAcc(acc, w).cost;
     results.push({ slot, occ, cost, delta: cost - baseCost });
@@ -330,10 +286,10 @@ export function suggestPlacements(ngram, weights, moraKeys, mora, curSlot, candi
   return { baseCost, results: results.slice(0, topN), tweak };
 }
 
-// 例示用: モーラ列を現在の配置で連続キー列に展開し、方向つきロール状態機械で
+// 例示用: モーラ列を現在の配置で連続キー列に展開し、三連接ルールで
 // 各連接を分類する(コスト計算ではなく、分類ラベルの可視化用)。
 // 例文は1連続ストリームとして扱う(第2モーラ所有の近似ではなく実ストリームを分類)。
-// 戻り値: { keys: [{mora, key, moraStart}], steps: [{cat}] }(steps は keys 間の連接)。
+// 戻り値: { keys: [{mora, key, moraStart}], steps: [{cat,cats}] }(steps は keys 間の連接)。
 export function classifyStream(moras, moraKeys) {
   const keys = [];
   for (const mora of moras) {
@@ -349,21 +305,33 @@ export function classifyStream(moras, moraKeys) {
   let curDir = 0;
   for (let i = 0; i < keys.length - 1; i++) {
     const a = keys[i].key, b = keys[i + 1].key;
-    if (!a || !b) { steps.push({ cat: "none" }); curDir = 0; continue; }
+    if (!a || !b) { steps.push({ cat: "none", cats: ["none"] }); curDir = 0; continue; }
     const t = classifyPair(a, b);
-    let cat;
+    let cat, redirectCat = null;
     if (t === "repeat") {
-      cat = "repeat";                         // 方向維持
+      cat = "repeat"; curDir = 0;
     } else if (t === "sfb") {
-      cat = "sfb";                            // 方向維持
+      cat = "sfb"; curDir = 0;
     } else if (t === "alt") {
       cat = "alt"; curDir = 0;                // 方向リセット
     } else {
       const d = rollDir(a, b);
-      cat = (curDir !== 0 && d === -curDir) ? "redirect" : (d > 0 ? "inroll" : "outroll");
+      cat = isGoodRoll(a, b) ? "goodRoll" : "badRoll";
+      if (curDir !== 0 && d === -curDir) {
+        redirectCat = isGoodRedirect(keys[i - 1].key, a, b) ? "goodRedirect" : "badRedirect";
+      }
       curDir = d;
     }
-    steps.push({ cat });
+    steps.push({ cat, cats: redirectCat ? [cat, redirectCat] : [cat] });
+  }
+
+  // SFS はbikey/redirect分類と同時に成立する。3キー目へ到達する連接に併記する。
+  for (let i = 0; i + 2 < keys.length; i++) {
+    const a = keys[i].key, c = keys[i + 2].key;
+    if (!a || !c) continue;
+    if (KEYMAP[a].finger === KEYMAP[c].finger && keyDist(a, c) >= 1) {
+      steps[i + 1].cats.push("sfs");
+    }
   }
   return { keys, steps };
 }

@@ -10,12 +10,9 @@ export function exportLayoutJSON(layout, metrics) {
     _meta: {
       name: "かな直",
       cost: metrics?.cost,
-      topRatio: metrics?.topRatio,
-      indexStretchRate: metrics?.indexStretchRate,
-      indexBottomRate: metrics?.indexBottomRate,
       effort: metrics?.effort,
       sfbRate: metrics?.sfbRate,
-      vbounceRate: metrics?.vbounceRate,
+      sfsRate: metrics?.sfsRate,
       flow: metrics?.flow,
       note: "かな直 v2 配列。mat=行列(17×20=340), single=単打(F/J/K)。人差し指拡張版(G/H/V/M)。",
     },

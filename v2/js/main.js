@@ -1,11 +1,12 @@
 // かな直 Playground v2 — 統合エントリ。
 import {
-  FINGER_ORDER, FIRST_KEYS, SECOND_KEYS, SINGLE_KEYS, KEYMAP, KEY_CODE,
+  FIRST_KEYS, SECOND_KEYS, SINGLE_KEYS, KEYMAP, KEY_CODE,
   MAT_SLOTS, classifyPair, buildMoraKeys, defaultLayout, cloneLayout,
 } from "./layout.js";
 import { computeMetrics, defaultWeights, classifyStream, suggestPlacements } from "./metrics.js";
 import { renderDetail } from "./detail.js";
 import { initTyping } from "./typing.js";
+import { textToMoras } from "./romaji.js";
 import {
   exportLayoutJSON, parseLayoutJSON, saveLocal, loadLocal, downloadText,
 } from "./storage.js";
@@ -34,31 +35,25 @@ const singleEls = {}; // key -> element
 
 // ---- 指標行 / 重み定義 ----
 const METRIC_ROWS = [
-  { key: "topRatio", label: "上段率", pct: true, wpath: ["w_top"], wl: "w_top", wmax: 5 },
-  { key: "indexStretchRate", label: "人差し内側率(G/H)", pct: true, wpath: ["w_index_stretch"], wl: "w_index_stretch", wmax: 5 },
-  { key: "indexBottomRate", label: "人差し下段率(V/M)", pct: true, wpath: ["w_index_bottom"], wl: "w_index_bottom", wmax: 5 },
-  { key: "effort", label: "指effort", pct: false, wpath: ["w_effort"], wl: "w_effort", wmax: 5 },
-  { key: "sfbRate", label: "SFB率(距離重み)", pct: true, wpath: ["w_sfb"], wl: "w_sfb", wmax: 10 },
-  { key: "skipRate", label: "同指スキップ(人差し大移動)", pct: true, wpath: ["w_skip"], wl: "w_skip", wmax: 10 },
-  { key: "vbounceRate", label: "ロール逸脱", pct: false, wpath: ["w_vbounce"], wl: "w_vbounce", wmax: 5 },
+  { key: "effort", label: "キーeffort", pct: false, wpath: ["w_effort"], wl: "w_effort", wmax: 5 },
   { key: "flow", label: "flow(連接)", pct: false, wpath: ["w_flow"], wl: "w_flow", wmax: 5 },
   { key: "orderPen", label: "順序ペナルティ", pct: false, wpath: ["w_order"], wl: "w_order", wmax: 5 },
 ];
 
 // 連接内訳の種別(現状値の表示と、対応する pen_flow 重みスライダーを併設)。
-// 方向つきロール状態機械の分類。sfb は別枠(w_sfb)なので重みスライダーは持たない。
-const FLOW_TYPES = ["inroll", "outroll", "redirect", "alt", "repeat", "sfb"];
+// SFSは距離重み付きの加算項なので、通常のbikey/redirect分類とは分けて定義する。
+const FLOW_TYPES = ["goodRedirect", "badRedirect", "goodRoll", "badRoll", "alt", "repeat", "sfb"];
+const FLOW_BREAK_TYPES = [...FLOW_TYPES, "sfs"];
 
-// 例文の flow 分類(常時表示)。例文はモーラ列として固定。
-const FLOW_EXAMPLE_TEXT = "ありがとうございます。";
-const FLOW_EXAMPLE_MORAS = ["あ", "り", "が", "と", "う", "ご", "ざ", "い", "ま", "す", "。"];
 const FLOW_CAT_META = {
-  inroll: { label: "内", legend: "内ロール" },
-  outroll: { label: "外", legend: "外ロール" },
-  redirect: { label: "反", legend: "反転(redirect)" },
+  goodRedirect: { label: "良反", legend: "good redirect" },
+  badRedirect: { label: "悪反", legend: "bad redirect" },
+  goodRoll: { label: "良ロ", legend: "good roll" },
+  badRoll: { label: "悪ロ", legend: "bad roll" },
   alt: { label: "互", legend: "交互(alt)" },
   repeat: { label: "連", legend: "連打(repeat)" },
   sfb: { label: "S", legend: "SFB" },
+  sfs: { label: "SFS", legend: "SFS" },
 };
 
 // ---- ユーティリティ ----
@@ -71,6 +66,9 @@ const setP = (o, p, v) => {
 };
 const fmtPct = (v) => (v * 100).toFixed(3) + "%";
 const fmtNum = (v) => v.toFixed(4);
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[char]));
 
 // 現在のレイアウト・重み・単打固定・キー割当を localStorage に保存。
 function saveState() {
@@ -93,7 +91,7 @@ async function init() {
   const saved = loadLocal();
   if (saved) {
     state.layout = saved.layout;
-    if (saved.weights) state.weights = mergeWeights(defaultWeights(), saved.weights);
+    if (saved.weights) state.weights = mergeWeights(defaultWeights(), migrateWeights(saved.weights));
     state.lockSingle = !!saved.lockSingle;
     if (saved.keyCodes) state.keyCodes = { ...KEY_CODE, ...saved.keyCodes };
   }
@@ -102,7 +100,6 @@ async function init() {
   buildSingles();
   buildMetricRows();
   buildLoads();
-  buildRollMove();
   buildBreakdowns();
   wireToolbar();
 
@@ -164,6 +161,51 @@ function mergeWeights(base, over) {
     }
   }
   return out;
+}
+
+function migrateWeights(weights) {
+  const migrated = structuredClone(weights);
+  delete migrated.w_vbounce;
+  delete migrated.roll_move;
+  if (!migrated.key_effort) {
+    const fallbackFinger = {
+      LP: 1.8, LR: 1.7, LM: 1.3, LI: 1.0,
+      RI: 1.0, RM: 1.0, RR: 1.7, RP: 1.8,
+    };
+    const fingerEffort = migrated.finger_effort || fallbackFinger;
+    const effortScale = migrated.w_effort ?? 1;
+    const topWeight = migrated.w_top ?? 1;
+    const stretchWeight = migrated.w_index_stretch ?? 0.2;
+    const bottomWeight = migrated.w_index_bottom ?? 0.05;
+    migrated.key_effort = Object.fromEntries(SECOND_KEYS.map((key) => {
+      const meta = KEYMAP[key];
+      const value = effortScale * (fingerEffort[meta.finger] ?? fallbackFinger[meta.finger]) +
+        (meta.row === "top" ? topWeight : 0) +
+        (meta.stretch ? stretchWeight : 0) +
+        (meta.row === "bottom" ? bottomWeight : 0);
+      return [key, value];
+    }));
+    migrated.w_effort = 1;
+  }
+  delete migrated.finger_effort;
+  delete migrated.w_top;
+  delete migrated.w_index_stretch;
+  delete migrated.w_index_bottom;
+  const old = migrated.pen_flow || (migrated.pen_flow = {});
+  const flowScale = migrated.w_flow || 1;
+  if (old.sfb == null) old.sfb = (migrated.w_sfb ?? 3.0) / flowScale;
+  if (old.sfs == null) old.sfs = (migrated.w_sfs ?? migrated.w_skip ?? 0.5) / flowScale;
+  delete migrated.w_sfb;
+  delete migrated.w_sfs;
+  delete migrated.w_skip;
+  if (old) {
+    if (old.goodRedirect == null && old.redirect != null) old.goodRedirect = old.alt ?? 0.5;
+    if (old.badRedirect == null && old.redirect != null) old.badRedirect = old.redirect;
+    if (old.goodRoll == null && (old.inroll != null || old.outroll != null)) {
+      old.goodRoll = Math.min(old.inroll ?? Infinity, old.outroll ?? Infinity);
+    }
+  }
+  return migrated;
 }
 
 // ================= グリッド構築 =================
@@ -373,17 +415,15 @@ function buildMetricRows() {
 function buildBreakdowns() {
   const box = $("flowBreak");
   box.innerHTML = "";
-  FLOW_TYPES.forEach((t) => {
-    // sfb は w_sfb 側で減点するため pen_flow スライダーを持たない。
-    const paths = t === "sfb" ? [] : [["pen_flow", t]];
-    const labels = t === "sfb" ? [] : ["重み"];
-    box.appendChild(breakRow("flow", t, paths, labels));
+  FLOW_BREAK_TYPES.forEach((t) => {
+    const max = t === "sfb" || t === "sfs" ? 10 : 3;
+    box.appendChild(breakRow("flow", t, [["pen_flow", t]], ["重み"], t, max));
   });
 }
 
 // 連接内訳の1行: [種別 | 現状値 | (ラベル+スライダー+重み値)...]。
 // labelText を省略すると type をそのまま行ラベルに使う。
-function breakRow(kind, type, paths, labels, labelText = type) {
+function breakRow(kind, type, paths, labels, labelText = type, max = 3) {
   const row = document.createElement("div");
   const wide = labelText !== type ? " bkw" : ""; // 文脈付きラベル(例 roll・ういん)は幅広に。
   row.className = "bk" + (paths.length > 1 ? " bk2" : "") + wide;
@@ -392,7 +432,7 @@ function breakRow(kind, type, paths, labels, labelText = type) {
     const key = p.join(".");
     html += `<span class="sw">` +
       `<span class="swl">${labels[i]}</span>` +
-      `<input type="range" min="0" max="3" step="0.05" data-wpath="${key}">` +
+      `<input type="range" min="0" max="${max}" step="0.05" data-wpath="${key}">` +
       `<span class="wv" data-wv="${key}"></span></span>`;
   });
   row.innerHTML = html;
@@ -420,58 +460,22 @@ function onWeightsChanged() {
 function buildLoads() {
   const box = $("loadBars");
   box.innerHTML = "";
-  FINGER_ORDER.forEach((f) => {
+  SECOND_KEYS.forEach((key) => {
     const row = document.createElement("div");
     row.className = "load-row";
-    row.innerHTML = `<span class="bl">${f}</span>
-      <div class="bar-track"><div class="bar-fill" data-load="${f}"></div></div>
-      <span class="bv" data-loadv="${f}">–</span>
-      <input type="range" min="0" max="3" step="0.05" data-wpath="finger_effort.${f}">
-      <span class="wv" data-wv="finger_effort.${f}"></span>`;
+    row.innerHTML = `<span class="bl">${key}</span>
+      <div class="bar-track"><div class="bar-fill" data-load="${key}"></div></div>
+      <span class="bv" data-loadv="${key}">–</span>
+      <input type="range" min="0" max="5" step="0.05" data-wpath="key_effort.${key}">
+      <span class="wv" data-wv="key_effort.${key}"></span>`;
     const slider = row.querySelector("input");
-    slider.value = getP(state.weights, ["finger_effort", f]);
+    slider.value = getP(state.weights, ["key_effort", key]);
     slider.addEventListener("input", () => {
-      setP(state.weights, ["finger_effort", f], parseFloat(slider.value));
+      setP(state.weights, ["key_effort", key], parseFloat(slider.value));
       onWeightsChanged();
     });
     box.appendChild(row);
   });
-}
-
-// vbounce 用: 逸脱重み roll_move のスライダー(非人差し指は指ごと1つ、人差し指は方向別)。
-// 各行に現在の逸脱出現率(スタッツ)も併記する。
-function buildRollMove() {
-  const box = $("rollMoveBars");
-  box.innerHTML = "";
-  const addRow = (path, label, dev, max = 5, title = "") => {
-    const row = document.createElement("div");
-    row.className = "rm-row";
-    row.style.gridTemplateColumns = "96px 46px 1fr 34px";
-    row.innerHTML = `<span class="bl" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"${title ? ` title="${title}"` : ""}>${label}</span>
-      <span class="rm-stat" data-dev="${dev}" title="逸脱の出現率(現状値)">–</span>
-      <input type="range" min="0" max="${max}" step="0.05" data-wpath="${path}">
-      <span class="wv" data-wv="${path}"></span>`;
-    const slider = row.querySelector("input");
-    const wpath = path.split(".");
-    slider.value = getP(state.weights, wpath);
-    slider.addEventListener("input", () => {
-      setP(state.weights, wpath, parseFloat(slider.value));
-      onWeightsChanged();
-    });
-    box.appendChild(row);
-  };
-
-  FINGER_ORDER.forEach((f) => {
-    if (f === "LI" || f === "RI") {
-      addRow(`roll_move.${f}_top`, `${f} 上段`, `${f}_top`);
-      addRow(`roll_move.${f}_stretch`, `${f} 内側stretch`, `${f}_stretch`);
-      addRow(`roll_move.${f}_bottom`, `${f} 下段`, `${f}_bottom`);
-    } else {
-      addRow(`roll_move.${f}`, `${f} 上段`, f);
-    }
-  });
-  // はさみ(中指上段×人差し下段の同手連続)加算。roll_move とは別枠のペア罰。
-  addRow("vb_scissor", "はさみ加算", "scissor", 6, "中指上段×人差し下段の同手連続(はさみ)への加算");
 }
 
 // ================= 計算 =================
@@ -569,25 +573,19 @@ function renderMetrics() {
     const span = document.querySelector(`[data-mkey="${row.key}"]`);
     if (span) span.textContent = row.pct ? fmtPct(m[row.key]) : fmtNum(m[row.key]);
   });
-  // loads(指の使用率)
-  FINGER_ORDER.forEach((f) => {
-    const v = m.loads[f] || 0;
-    const fill = document.querySelector(`[data-load="${f}"]`);
-    const val = document.querySelector(`[data-loadv="${f}"]`);
-    if (fill) fill.style.width = Math.min(100, v * 100 * 3) + "%"; // 0..33%程度を可視化
+  // 物理キーごとの使用率。
+  SECOND_KEYS.forEach((key) => {
+    const v = m.keyLoads[key] || 0;
+    const fill = document.querySelector(`[data-load="${key}"]`);
+    const val = document.querySelector(`[data-loadv="${key}"]`);
+    if (fill) fill.style.width = Math.min(100, v * 100 * 5) + "%";
     if (val) val.textContent = fmtPct(v);
   });
   // 連接内訳(現状値)
-  FLOW_TYPES.forEach((t) => {
+  FLOW_BREAK_TYPES.forEach((t) => {
     const s = document.querySelector(`[data-flow="${t}"]`);
     if (s) s.textContent = fmtPct(m.flowRates[t] || 0);
   });
-  // 逸脱スタッツ(現状値)
-  if (m.devRates) {
-    document.querySelectorAll("[data-dev]").forEach((s) => {
-      s.textContent = fmtPct(m.devRates[s.dataset.dev] || 0);
-    });
-  }
 }
 
 function renderWeightValues() {
@@ -613,25 +611,34 @@ function renderFlowExample() {
   const box = $("flowExample");
   if (!box) return;
   const moraKeys = buildMoraKeys(state.layout);
-  const { keys, steps } = classifyStream(FLOW_EXAMPLE_MORAS, moraKeys);
+  const input = $("flowExampleInput");
+  const moras = textToMoras(input ? input.value : "", Object.keys(moraKeys));
+  const { keys, steps } = classifyStream(moras, moraKeys);
 
   const counts = {};
-  for (const s of steps) if (s.cat !== "none") counts[s.cat] = (counts[s.cat] || 0) + 1;
+  for (const step of steps) {
+    for (const cat of step.cats || [step.cat]) {
+      if (cat !== "none") counts[cat] = (counts[cat] || 0) + 1;
+    }
+  }
 
-  let html = `<div class="flowex-sentence">${FLOW_EXAMPLE_TEXT}</div><div class="flowex-stream">`;
+  let html = `<div class="flowex-stream">`;
   keys.forEach((k, i) => {
     const cls = "flowex-key" + (k.key ? "" : " unplaced");
     const keyText = k.key ? k.key.toLowerCase() : "?";
-    html += `<span class="${cls}"><span class="fk-key">${keyText}</span><span class="fk-mora">${k.mora}</span></span>`;
+    html += `<span class="${cls}"><span class="fk-key">${escapeHtml(keyText)}</span><span class="fk-mora">${escapeHtml(k.mora)}</span></span>`;
     if (i < steps.length) {
-      const cat = steps[i].cat;
-      const meta = FLOW_CAT_META[cat];
-      html += `<span class="flowex-op cat-${cat}" title="${meta ? meta.legend : "未配置"}">${meta ? meta.label : "–"}</span>`;
+      const cats = steps[i].cats || [steps[i].cat];
+      const labels = cats.map((cat) => {
+        const meta = FLOW_CAT_META[cat];
+        return `<span class="flowex-op cat-${cat}" title="${meta ? meta.legend : "未配置"}">${meta ? meta.label : "–"}</span>`;
+      }).join("");
+      html += `<span class="flowex-ops">${labels}</span>`;
     }
   });
   html += `</div>`;
 
-  const legend = FLOW_TYPES.map((c) => {
+  const legend = FLOW_BREAK_TYPES.map((c) => {
     const meta = FLOW_CAT_META[c];
     return `<span class="lg"><i class="cat-${c}"></i>${meta.legend} ${counts[c] || 0}</span>`;
   }).join("");
@@ -690,6 +697,7 @@ function wireToolbar() {
   $("btnExport").addEventListener("click", openExport);
   $("btnImport").addEventListener("click", openImport);
   $("btnKarabiner").addEventListener("click", openKarabiner);
+  $("flowExampleInput").addEventListener("input", renderFlowExample);
 
   const lockCb = $("lockSingle");
   lockCb.checked = state.lockSingle;

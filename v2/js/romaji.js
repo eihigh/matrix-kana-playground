@@ -94,3 +94,34 @@ export function romajiToMoras(text) {
   }
   return out;
 }
+
+// 日本語またはローマ字の自由入力を、現在の配置にある最長一致のモーラ列へ変換する。
+export function textToMoras(text, knownMoras = []) {
+  const normalized = String(text).normalize("NFKC").replace(/[ァ-ヶ]/g, (char) =>
+    String.fromCharCode(char.charCodeAt(0) - 0x60)
+  );
+  const candidates = [...new Set(knownMoras)].filter(Boolean).sort((a, b) => b.length - a.length);
+  const out = [];
+
+  for (let i = 0; i < normalized.length;) {
+    if (/\s/.test(normalized[i])) { i++; continue; }
+
+    const ascii = normalized.slice(i).match(/^[A-Za-z.,-]+/);
+    if (ascii) {
+      out.push(...romajiToMoras(ascii[0]).filter((mora) => mora !== BREAK));
+      i += ascii[0].length;
+      continue;
+    }
+
+    const matched = candidates.find((mora) => normalized.startsWith(mora, i));
+    if (matched) {
+      out.push(matched);
+      i += matched.length;
+    } else {
+      const [char] = Array.from(normalized.slice(i));
+      out.push(char);
+      i += char.length;
+    }
+  }
+  return out;
+}

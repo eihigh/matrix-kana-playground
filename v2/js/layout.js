@@ -9,7 +9,7 @@ export const FID = Object.fromEntries(FINGER_ORDER.map((f, i) => [f, i]));
 //   row  : "top" | "home" | "bottom"(段の名前。上段率/下段率などの集計に使う)
 //   x, y : キーの物理座標。y は home=0, top=-1, bottom=+1。x は左端 0 から右へ。
 //          SFB の距離重みはこの座標から計算する。
-//   stretch: 人差し指の内側列(G, H)。人差し拡張率/ロール逸脱(vbounce)の対象。
+//   stretch: 人差し指の内側列(G, H)。人差し拡張率の集計に使う。
 //
 // 列(x)の割り当て:
 //   左  LP=0 LR=1 LM=2 LI(ホーム列)=3 LI(内側列)=4
