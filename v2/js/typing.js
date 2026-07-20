@@ -11,15 +11,38 @@ import { KANA_TO_ROMAJI } from "./karabiner.js";
 
 let CORPUS = ""; // 空白正規化した jap-n.txt 全文。
 
+// かな直ローマ字(KANA_TO_ROMAJI)から逆引きとプレフィックス集合を用意。
+// この配列では 1かな=固定のローマ字列。打鍵はアルファベットだが複数文字で
+// 1かなをなすので、バッファに溜めて「1かな分」確定してから期待かなと突き合わせ、
+// 違えば「打ってしまったかな」を赤字で表示する。
+const ROMAJI_TO_KANA = {};
+const ROMAJI_PREFIXES = new Set();
+for (const [kana, r] of Object.entries(KANA_TO_ROMAJI)) {
+  ROMAJI_TO_KANA[r] = kana;
+  for (let l = 1; l < r.length; l++) ROMAJI_PREFIXES.add(r.slice(0, l));
+}
+
+// バッファ(これまでに打ったアルファベット)の状態を返す。
+//  done  : 1かな分が確定(kana にそのかな)
+//  それ以外で invalid=false : さらに打鍵を待つプレフィックス途中
+//  invalid=true : どのかなにもならない(ゴミ入力)
+function moraState(buf) {
+  if (ROMAJI_PREFIXES.has(buf)) return { done: false, invalid: false, kana: "" };
+  const kana = ROMAJI_TO_KANA[buf];
+  if (kana) return { done: true, invalid: false, kana };
+  return { done: false, invalid: true, kana: "" };
+}
+
 // 現在の練習状態。
 const st = {
   moras: [],      // [{ kana, romaji }]
   cursorM: 0,     // 現在のモーラ index
-  cursorC: 0,     // 現在モーラ内のローマ字文字 index
+  buf: "",        // 現モーラに向けて打ったアルファベット(未確定分)
   results: [],    // モーラ index -> "ok" | "err" | undefined(未完了)
   moraErr: [],    // モーラ index -> そのモーラで誤打があったか
   mistakes: 0,
-  missFlash: false, // 直近の打鍵が誤打(正しく打つまで表示)
+  missFlash: false, // 直近のモーラが誤打(正しく打つまで表示)
+  missKey: "",     // 打ち間違えたかな(赤字で挿入表示)
   startTime: 0,
   done: false,
 };
@@ -57,11 +80,12 @@ function pickMoras(len = 90) {
 function load(moras) {
   st.moras = moras;
   st.cursorM = 0;
-  st.cursorC = 0;
+  st.buf = "";
   st.results = new Array(moras.length);
   st.moraErr = new Array(moras.length).fill(false);
   st.mistakes = 0;
   st.missFlash = false;
+  st.missKey = "";
   st.startTime = 0;
   st.done = moras.length === 0;
   render();
@@ -76,7 +100,13 @@ function render() {
     let cls = "tp-char";
     if (results[i] === "ok") cls += " ok";
     else if (results[i] === "err") cls += " err";
-    if (i === cursorM && !st.done) { cls += " cur"; if (st.missFlash) cls += " miss"; }
+    if (i === cursorM && !st.done) {
+      cls += " cur";
+      // 打ち間違えたかなを、これから打つかなの直前に赤字で差し込む。
+      if (st.missFlash && st.missKey) {
+        html += `<span class="tp-miss">${escapeHtml(st.missKey)}</span>`;
+      }
+    }
     html += `<span class="${cls}">${escapeHtml(moras[i].kana)}</span>`;
   }
   if (st.done && moras.length) html += `<span class="tp-done">完了！</span>`;
@@ -108,26 +138,44 @@ function onKey(e) {
 
   if (!st.startTime) st.startTime = performance.now();
   const m = st.moras[st.cursorM];
-  const expected = m.romaji[st.cursorC];
-  const ok = e.key.toLowerCase() === expected.toLowerCase();
-  if (!ok) {
-    // ミスは表示するが消費(前進)しない。正しく打つまでその位置に留まる。
+  const buf = st.buf + e.key.toLowerCase();
+  const state = moraState(buf);
+
+  if (state.invalid) {
+    // どのかなにもならないゴミ入力。誤打として扱いバッファを捨てる。
+    st.buf = "";
     st.mistakes++;
     st.moraErr[st.cursorM] = true;
     st.missFlash = true;
+    st.missKey += buf;
     render();
     updateStats();
     return;
   }
-  st.missFlash = false;
-  st.cursorC++;
-  if (st.cursorC >= m.romaji.length) {
-    // モーラ完了。
+  if (!state.done) {
+    // まだ1かな分に満たない。バッファに溜めて次の打鍵を待つ。
+    st.buf = buf;
+    render();
+    updateStats();
+    return;
+  }
+
+  // 1かな分が確定。
+  st.buf = "";
+  if (state.kana === m.kana) {
+    // 正解。
+    st.missFlash = false;
+    st.missKey = "";
     st.results[st.cursorM] = st.moraErr[st.cursorM] ? "err" : "ok";
     st.cursorM++;
-    st.cursorC = 0;
     if (st.cursorM >= st.moras.length) st.done = true;
     notifyKana();
+  } else {
+    // 別のかなを打った=ミス。消費(前進)せず、打ったかなを赤字で表示。
+    st.mistakes++;
+    st.moraErr[st.cursorM] = true;
+    st.missFlash = true;
+    st.missKey += state.kana;
   }
   render();
   updateStats();
