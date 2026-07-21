@@ -191,10 +191,7 @@ func RomajiToMoras(text string) ([]string, map[byte]int) {
 		}
 		// longest-match
 		matched := false
-		hi := maxLen
-		if n-i < hi {
-			hi = n - i
-		}
+		hi := min(n-i, maxLen)
 		for L := hi; L >= 1; L-- {
 			seg := s[i : i+L]
 			if v, ok := table[seg]; ok {

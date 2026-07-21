@@ -99,11 +99,11 @@ func initPairs() {
 		}
 		goodRollPairs[parts[0]+":"+parts[1]] = true
 	}
-	for a := 0; a < nKeys; a++ {
+	for a := range nKeys {
 		ka := keymap[a]
 		redirectKey[a] = ka.fingerKind == 'I' && !ka.stretch && (ka.row == 'H' || ka.row == 'B')
 		pinkyKey[a] = ka.fingerKind == 'P'
-		for b := 0; b < nKeys; b++ {
+		for b := range nKeys {
 			kb := keymap[b]
 			dx, dy := ka.x-kb.x, ka.y-kb.y
 			pairDist[a][b] = math.Sqrt(dx*dx + dy*dy)
@@ -238,14 +238,14 @@ func compileWeights(w Weights) penTable {
 // ---- 指標(metrics.js costFromAcc 相当) ----
 
 type Metrics struct {
-	Valid   bool
-	Cost    float64
-	Effort  float64
-	Flow    float64
-	Strokes float64
+	Valid    bool
+	Cost     float64
+	Effort   float64
+	Flow     float64
+	Strokes  float64
 	OrderPen float64
-	SfbRate float64 // 距離重み付き / totalBg
-	SfsRate float64
+	SfbRate  float64 // 距離重み付き / totalBg
+	SfsRate  float64
 	// 内訳(連接あたり): indexRedirect pinkyRedirect middleRedirect goodRoll badRoll alt repeat sfb(件数)
 	Rates map[string]float64
 }
@@ -348,7 +348,7 @@ func evaluate(mk *moraKeysT, ng *ngramData, p *penTable, wantRates bool) Metrics
 		return Metrics{Valid: false, Cost: 1e9}
 	}
 	effort := 0.0
-	for k := 0; k < nKeys; k++ {
+	for k := range nKeys {
 		effort += p.keyEffort[k] * keyCnt[k]
 	}
 	effort /= mora

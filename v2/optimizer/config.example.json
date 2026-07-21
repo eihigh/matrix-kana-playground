@@ -11,6 +11,7 @@
   "logInterval": 1000,
   "seed": 1,
   "restarts": 2,
+  "runs": 0,
   "polish": true,
   "out": "optimized_layout.json"
 }

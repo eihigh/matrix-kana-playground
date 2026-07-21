@@ -33,6 +33,7 @@ const state = {
 };
 
 let worker = null;
+let typingPanel = null; // タイピング練習(モード切替時に練習単位を組み直す)
 const cellEls = {};   // slotId -> element
 const singleEls = {}; // key -> element
 const gheadEls = {};  // 列ヘッダ(第1キー)key -> element(単打かなの併記更新用)
@@ -122,9 +123,13 @@ async function init() {
   renderAll();
 
   // タイピング練習パネル: jap-n.txt を取得して初期化(UI表示を待たせない)。
+  // 練習単位はモードに応じて展開する(分解モードでは しゃ→し+ゃ)。
   fetch("./jap-n.txt")
     .then((r) => r.text())
-    .then((txt) => initTyping($("typingPanel"), txt, setTypingTarget))
+    .then((txt) => {
+      typingPanel = initTyping($("typingPanel"), txt, setTypingTarget,
+        (mora) => (state.yoonSplit ? splitMora(mora) : [mora]));
+    })
     .catch(() => {
       const el = $("typingPanel");
       if (el) el.innerHTML = `<div class="tp-note">jap-n.txt を読み込めませんでした。</div>`;
@@ -188,22 +193,26 @@ function unitsOfMora(m) {
 // 分解モードなら分解対象モーラ(拗音・外来語音)を退避して ゃゅょ を配置、一体モードなら逆。
 // リセット・インポート・起動時など、レイアウトを外から差し替えた後にも呼ぶ。
 function enforceYoonMode() {
-  const mat = state.layout.mat;
   const single = state.layout.single;
   const deactivate = state.yoonSplit ? SPLIT_KANA : SMALL_YOON;
   const activate = state.yoonSplit ? SMALL_YOON : SPLIT_KANA;
-  for (const [slot, kana] of Object.entries(mat)) {
+  for (const [slot, kana] of Object.entries(state.layout.mat)) {
     if (kana && deactivate.includes(kana)) {
       state.yoonStash[kana] = slot;
-      mat[slot] = "";
+      state.layout.mat[slot] = "";
     }
   }
   for (const [key, kana] of Object.entries(single)) {
     if (kana && deactivate.includes(kana)) {
       state.yoonStash[kana] = "";
-      single[key] = "";
+      delete single[key]; // かなの無い単打は存在しない(解除して列を復活)
     }
   }
+  // 単打集合が変わった場合に備えて行列スロット集合を揃える。
+  const mat = {};
+  for (const slot of getMatSlots()) mat[slot] = state.layout.mat[slot] || "";
+  state.layout.mat = mat;
+
   const placed = new Set([...Object.values(mat), ...Object.values(single)].filter(Boolean));
   const slots = getMatSlots();
   for (const kana of activate) {
@@ -223,6 +232,7 @@ function applyYoonMode(split) {
   enforceYoonMode();
   rebuildNgram();
   onLayoutEdited();
+  if (typingPanel) typingPanel.refresh(); // 練習中の一節を現在のモードの単位に組み直す
 }
 
 // あるかなが「ぬ」より低頻度(レア)か。頻度データに無いものもレア扱い。
@@ -310,7 +320,6 @@ function ensureStructure() {
   if (sig === builtSingleSig) return;
   builtSingleSig = sig;
   buildGrid();
-  buildSingles();
 }
 
 // キー組の性質による色クラス(かなに依らない)。
@@ -336,6 +345,32 @@ function buildGrid() {
     const h = el("div", "ghead" + (f === SEP_KEY ? " sep-l" : ""), f);
     gheadEls[f] = h;
     grid.appendChild(h);
+  }
+
+  // 単打行: 列ラベル直下。かなを置いたキーが単打になる(空=通常の第1キー)。
+  // 行列セルと同じ見た目・同じドラッグ操作で交換できる。
+  for (const k of Object.keys(singleEls)) delete singleEls[k];
+  grid.appendChild(el("div", "rhead single-rhead", "単打"));
+  for (const key of SECOND_KEYS) {
+    const cell = document.createElement("div");
+    cell.className = "slot single-cell" + (key === SEP_KEY ? " sep-l" : "");
+    cell.dataset.single = key;
+    cell.draggable = true;
+    const fill = document.createElement("div");
+    fill.className = "freq-fill";
+    cell.appendChild(fill);
+    const kv = document.createElement("span");
+    kv.className = "kv";
+    cell.appendChild(kv);
+    const seq = document.createElement("span");
+    seq.className = "seq";
+    seq.textContent = key.toLowerCase();
+    cell.appendChild(seq);
+    cell._kv = kv;
+    cell._fill = fill;
+    attachCellEvents(cell, "single", key);
+    singleEls[key] = cell;
+    grid.appendChild(cell);
   }
 
   // 本体: 行 = 第2キー、列 = 第1キー。単打キーの列は無効セルとして描画する。
@@ -382,87 +417,40 @@ function buildGrid() {
   });
 }
 
-function buildSingles() {
-  const box = $("singles");
-  box.innerHTML = "";
-  for (const k of Object.keys(singleEls)) delete singleEls[k];
-  getSingleKeys().forEach((key) => {
-    const s = document.createElement("div");
-    s.className = "single-slot";
-    s.dataset.single = key;
-    s.draggable = true;
-    s.innerHTML = `<span class="k">${key}（単打）</span><span class="v"></span>` +
-      `<button class="single-x" title="単打を解除して行列の第1キーに戻す（かなは空きスロットへ）">×</button>`;
-    s.querySelector(".single-x").addEventListener("click", (e) => {
-      e.stopPropagation();
-      removeSingleKey(key);
-    });
-    attachCellEvents(s, "single", key);
-    singleEls[key] = s;
-    box.appendChild(s);
-  });
-  const add = document.createElement("button");
-  add.className = "single-add";
-  add.textContent = "＋ 単打を追加";
-  add.title = "単打キーを1つ追加（列の使用頻度が最小のキーを単打化。かなはドラッグか最適化で割当）";
-  add.addEventListener("click", addSingleKey);
-  box.appendChild(add);
-}
-
-// 単打キーを1つ追加する。列の総頻度が最小の第1キーを単打化し、
-// その列のかなは空きスロットへ退避する。どのキーが単打かは最適化(役割スワップ)で動く。
-function addSingleKey() {
-  if (state.optimizing || state.stopping) return;
-  const singles = getSingleKeys();
-  const firsts = SECOND_KEYS.filter((k) => !singles.includes(k));
-  if (firsts.length <= 1) return;
+// key を単打化して kana を割り当てる。key列の占有かなは空きスロットへ退避する。
+// fromSlot はドラッグ元の行列スロット(あれば空ける)。空きが足りなければ false。
+function makeSingle(key, kana, fromSlot) {
   const mat = state.layout.mat;
-  let bestKey = null, bestLoad = Infinity;
-  for (const f of firsts) {
-    let load = 0;
-    for (const s of SECOND_KEYS) {
-      const kana = mat[f + s];
-      if (kana) load += state.ngram.unigram[kana] || 0;
-    }
-    if (load < bestLoad) { bestLoad = load; bestKey = f; }
+  const occupants = [];
+  for (const s of SECOND_KEYS) {
+    const slot = key + s;
+    if (slot !== fromSlot && mat[slot]) occupants.push(mat[slot]);
   }
-  const occupants = SECOND_KEYS.map((s) => mat[bestKey + s]).filter(Boolean);
-  const newSingles = [...singles, bestKey];
-  const newSlots = matSlotsOf(newSingles);
+  const newSlots = matSlotsOf([...getSingleKeys(), key]);
   const newMat = {};
   for (const slot of newSlots) newMat[slot] = mat[slot] || "";
+  if (fromSlot && fromSlot in newMat) newMat[fromSlot] = "";
   const empties = newSlots.filter((s) => !newMat[s]);
   if (empties.length < occupants.length) {
-    alert("空きスロットが足りないため単打を追加できません");
-    return;
+    alert("空きスロットが足りないため単打化できません");
+    return false;
   }
-  occupants.forEach((kana, i) => { newMat[empties[i]] = kana; });
+  occupants.forEach((k, i) => { newMat[empties[i]] = k; });
   state.layout.mat = newMat;
-  state.layout.single[bestKey] = "";
-  onLayoutEdited();
+  state.layout.single[key] = kana;
+  return true;
 }
 
-// 単打キーを解除して行列の第1キーへ戻す。割当かなは空きスロットへ移す。
-function removeSingleKey(key) {
-  if (state.optimizing || state.stopping) return;
-  const singles = getSingleKeys();
-  if (singles.length <= 1) return; // 単打0は不可
+// key の単打を解除して通常の第1キーへ戻す(列のスロットが復活する)。
+// 割当かなの行き先スロットを toSlot で指定できる(省略時はどこにも置かない)。
+function unmakeSingle(key, toSlot) {
   const kana = state.layout.single[key];
   delete state.layout.single[key];
   const mat = state.layout.mat;
-  const newSlots = matSlotsOf(getSingleKeys());
   const newMat = {};
-  for (const slot of newSlots) newMat[slot] = mat[slot] || "";
-  if (kana) {
-    const empty = newSlots.find((s) => !newMat[s]);
-    if (empty) newMat[empty] = kana;
-  }
+  for (const slot of getMatSlots()) newMat[slot] = mat[slot] || "";
+  if (toSlot && kana) newMat[toSlot] = kana;
   state.layout.mat = newMat;
-  if (state.selected && state.selected.kind === "single" && state.selected.id === key) {
-    state.selected = null;
-    state.suggest = null;
-  }
-  onLayoutEdited();
 }
 
 function el(tag, cls, text) {
@@ -513,20 +501,54 @@ function swap(kind, a, b) {
     const t = state.layout.mat[a];
     state.layout.mat[a] = state.layout.mat[b];
     state.layout.mat[b] = t;
+    onLayoutEdited();
   } else {
-    const t = state.layout.single[a];
-    state.layout.single[a] = state.layout.single[b];
-    state.layout.single[b] = t;
+    swapSingles(a, b);
+  }
+}
+
+// 単打セル同士の入替。単打の有効/無効は「かながあるか」に従うので、
+// 空セルへ動かした場合は移動元の単打を解除し、移動先を単打化する。
+function swapSingles(a, b) {
+  const single = state.layout.single;
+  const hasA = a in single, hasB = b in single;
+  if (!hasA && !hasB) return; // 両方空
+  if (hasA && hasB) {
+    const t = single[a];
+    single[a] = single[b];
+    single[b] = t;
+    onLayoutEdited();
+    return;
+  }
+  const [from, to] = hasA ? [a, b] : [b, a];
+  const kana = single[from];
+  unmakeSingle(from); // 先に解除すると from 列が開き、退避先の空きが増える
+  if (!makeSingle(to, kana, null)) {
+    makeSingle(from, kana, null); // 失敗時は元の単打へ戻す(列は空なので必ず成功)
+    return;
   }
   onLayoutEdited();
 }
 
-// 行列スロットと単打キーのかなを入れ替える(どのかなを単打にするかの手動編集)。
+// 行列スロット⇄単打セルの入替。単打の有効/無効は「かながあるか」に従う:
+//   空の単打セルへ置く → そのキーを単打化(列のかなは空きへ退避)
+//   単打かなを行列の空セルへ出す → 単打解除(列が復活)
 function swapCross(matSlot, singleKey) {
-  const t = state.layout.mat[matSlot];
-  state.layout.mat[matSlot] = state.layout.single[singleKey];
-  state.layout.single[singleKey] = t;
-  onLayoutEdited();
+  const single = state.layout.single;
+  const mat = state.layout.mat;
+  const matKana = mat[matSlot] || "";
+  if (singleKey in single) {
+    if (!matKana) {
+      unmakeSingle(singleKey, matSlot);
+    } else {
+      mat[matSlot] = single[singleKey];
+      single[singleKey] = matKana;
+    }
+    onLayoutEdited();
+  } else {
+    if (!matKana) return; // 空→空は無意味
+    if (makeSingle(singleKey, matKana, matSlot)) onLayoutEdited();
+  }
 }
 
 function selectCell(kind, id) {
@@ -688,7 +710,14 @@ function renderAll() {
 
 function renderGrid() {
   ensureStructure();
+  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
+  const neighbors = computeNeighbors(moraKeys);
+  // タイピング練習の現在かな: 2キーなら行列スロット、1キーなら単打キーを発光。
+  const tKeys = state.typingKana ? moraKeys[state.typingKana] : null;
+  const tSlot = tKeys && tKeys.length === 2 ? tKeys[0] + tKeys[1] : null;
+  const tSingle = tKeys && tKeys.length === 1 ? tKeys[0] : null;
   // 列ヘッダ: 単打キーは割当かなを併記(割当は再構築なしでも変わるので毎回更新)。
+  // 練習中の単打かなはヘッダも発光させる。
   for (const [key, h] of Object.entries(gheadEls)) {
     const kana = state.layout.single[key];
     if (key in state.layout.single) {
@@ -696,12 +725,8 @@ function renderGrid() {
     } else if (h.textContent !== key) {
       h.textContent = key;
     }
+    h.classList.toggle("typing-target", key === tSingle);
   }
-  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
-  const neighbors = computeNeighbors(moraKeys);
-  // タイピング練習の現在かなの行列スロット(2キーのモーラのみ)。
-  const tKeys = state.typingKana ? moraKeys[state.typingKana] : null;
-  const tSlot = tKeys && tKeys.length === 2 ? tKeys[0] + tKeys[1] : null;
   for (const slot of getMatSlots()) {
     const cell = cellEls[slot];
     const kana = state.layout.mat[slot];
@@ -732,13 +757,20 @@ function renderSingles() {
   const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
   const tKeys = state.typingKana ? moraKeys[state.typingKana] : null;
   const tSingle = tKeys && tKeys.length === 1 ? tKeys[0] : null;
-  getSingleKeys().forEach((key) => {
-    const s = singleEls[key];
-    s.querySelector(".v").textContent = state.layout.single[key] || "";
-    s.classList.toggle("selected", isSelected("single", key));
-    s.classList.toggle("locked", state.lockSingle);
-    s.classList.toggle("typing-target", key === tSingle);
-  });
+  for (const key of SECOND_KEYS) {
+    const cell = singleEls[key];
+    if (!cell) continue;
+    const kana = state.layout.single[key] || "";
+    cell._kv.textContent = kana;
+    const freq = kana ? (state.ngram.unigram[kana] || 0) : 0;
+    const w = state.ngram.refFreq > 0 ? Math.min(100, freq / state.ngram.refFreq * 100) : 0;
+    cell._fill.style.width = w + "%";
+    cell.classList.toggle("empty", !kana);
+    cell.classList.toggle("rare", isRare(kana));
+    cell.classList.toggle("selected", isSelected("single", key));
+    cell.classList.toggle("locked", state.lockSingle);
+    cell.classList.toggle("typing-target", key === tSingle);
+  }
 }
 
 function isSelected(kind, id) {
@@ -829,7 +861,9 @@ function renderFlowExample() {
 
   let html = `<div class="flowex-stream">`;
   keys.forEach((k, i) => {
-    const cls = "flowex-key" + (k.key ? "" : " unplaced");
+    // 左手/右手で色分けし、手の連続(同手が続く区間)を視認しやすくする。
+    const hand = k.key ? " hand-" + KEYMAP[k.key].hand.toLowerCase() : "";
+    const cls = "flowex-key" + hand + (k.key ? "" : " unplaced");
     const keyText = k.key ? k.key.toLowerCase() : "?";
     html += `<span class="${cls}"><span class="fk-key">${escapeHtml(keyText)}</span><span class="fk-mora">${escapeHtml(k.mora)}</span></span>`;
     if (i < steps.length) {
@@ -843,11 +877,14 @@ function renderFlowExample() {
   });
   html += `</div>`;
 
+  const handLegend =
+    `<span class="lg"><i class="hand-sw-l"></i>左手</span>` +
+    `<span class="lg"><i class="hand-sw-r"></i>右手</span>`;
   const legend = FLOW_BREAK_TYPES.map((c) => {
     const meta = FLOW_CAT_META[c];
     return `<span class="lg"><i class="cat-${c}"></i>${meta.legend} ${counts[c] || 0}</span>`;
   }).join("");
-  html += `<div class="flowex-legend">${legend}</div>`;
+  html += `<div class="flowex-legend">${handLegend}${legend}</div>`;
 
   box.innerHTML = html;
 }
@@ -911,11 +948,9 @@ function renderIter() {
     bp.classList.remove("running");
     bp.disabled = false;
   }
-  // 拗音モード・単打数の変更は最適化中に不可(ワーカー側の状態と食い違うため)。
-  const busy = state.optimizing || state.stopping;
+  // 拗音モードの切り替えは最適化中に不可(ワーカー側の状態と食い違うため)。
   const yoonCb = $("yoonSplit");
-  if (yoonCb) yoonCb.disabled = busy;
-  document.querySelectorAll(".single-add, .single-x").forEach((b) => { b.disabled = busy; });
+  if (yoonCb) yoonCb.disabled = state.optimizing || state.stopping;
 }
 
 // ================= ツールバー・最適化 =================

@@ -106,7 +106,7 @@ func buildMoraTable(extra []string) *moraTable {
 
 type Layout struct {
 	isSingle   [nKeys]bool
-	singleKana [nKeys]int16 // -1 = 空
+	singleKana [nKeys]int16         // -1 = 空
 	mat        [nKeys * nKeys]int16 // first*20+second → モーラidx / -1 空(単打列は常に -1)
 }
 
@@ -134,11 +134,11 @@ func (l *Layout) singleCount() int {
 // 行列スロット一覧(単打キー列を除く)。
 func (l *Layout) slots() []int {
 	out := make([]int, 0, nKeys*nKeys)
-	for f := 0; f < nKeys; f++ {
+	for f := range nKeys {
 		if l.isSingle[f] {
 			continue
 		}
-		for s := 0; s < nKeys; s++ {
+		for s := range nKeys {
 			out = append(out, f*nKeys+s)
 		}
 	}
@@ -169,7 +169,7 @@ func buildMoraKeys(l *Layout, mt *moraTable, yoonSplit bool, mk *moraKeysT) {
 		mk.keys[kana][1] = uint8(slot % nKeys)
 		mk.length[kana] = 2
 	}
-	for k := 0; k < nKeys; k++ {
+	for k := range nKeys {
 		if l.isSingle[k] && l.singleKana[k] >= 0 {
 			kana := l.singleKana[k]
 			mk.keys[kana][0] = uint8(k)
@@ -188,11 +188,11 @@ func buildMoraKeys(l *Layout, mt *moraTable, yoonSplit bool, mk *moraKeysT) {
 				continue
 			}
 			n := uint8(0)
-			for j := uint8(0); j < lb; j++ {
+			for j := range lb {
 				mk.keys[i][n] = mk.keys[b][j]
 				n++
 			}
-			for j := uint8(0); j < ls; j++ {
+			for j := range ls {
 				mk.keys[i][n] = mk.keys[s][j]
 				n++
 			}
@@ -338,7 +338,7 @@ func enforceSplit(l *Layout, mt *moraTable) {
 			l.mat[slot] = -1
 		}
 	}
-	for k := 0; k < nKeys; k++ {
+	for k := range nKeys {
 		if l.singleKana[k] >= 0 && mt.base[l.singleKana[k]] >= 0 {
 			l.singleKana[k] = -1
 		}
@@ -349,7 +349,7 @@ func enforceSplit(l *Layout, mt *moraTable) {
 			placed[kana] = true
 		}
 	}
-	for k := 0; k < nKeys; k++ {
+	for k := range nKeys {
 		if l.singleKana[k] >= 0 {
 			placed[l.singleKana[k]] = true
 		}
@@ -372,11 +372,11 @@ func enforceSplit(l *Layout, mt *moraTable) {
 
 func writeLayoutJSON(path string, l *Layout, mt *moraTable, m Metrics, cfg *Config) error {
 	mat := map[string]string{}
-	for f := 0; f < nKeys; f++ {
+	for f := range nKeys {
 		if l.isSingle[f] {
 			continue
 		}
-		for s := 0; s < nKeys; s++ {
+		for s := range nKeys {
 			kana := ""
 			if mi := l.mat[f*nKeys+s]; mi >= 0 {
 				kana = mt.names[mi]
@@ -385,7 +385,7 @@ func writeLayoutJSON(path string, l *Layout, mt *moraTable, m Metrics, cfg *Conf
 		}
 	}
 	single := map[string]string{}
-	for k := 0; k < nKeys; k++ {
+	for k := range nKeys {
 		if !l.isSingle[k] {
 			continue
 		}

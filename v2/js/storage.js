@@ -6,7 +6,8 @@ const LS_KEY = "kanachoku_v2";
 
 // レイアウトを検証・正規化する。単打キーの位置・割当・個数は入力の layout.single に従う
 // (自由化: どのキーが単打か、何を単打にするかは事前に決めない)。
-// - 単打キーが不正/空なら既定(F/J に ん・い)へフォールバック
+// - 単打は「かなが割り当てられているキー」のみ(空エントリは単打でないとして落とす)
+// - single が未定義のときだけ既定(F/J に ん・い)へフォールバック(空オブジェクトは単打なしとして尊重)
 // - 行列は単打キー集合から導出したスロットのみ保持
 // - かなの重複は単打優先→行列先勝ちで除去
 export function normalizeLayout(layout) {
@@ -17,11 +18,9 @@ export function normalizeLayout(layout) {
     if (kana && !used.has(kana)) {
       single[key] = kana;
       used.add(kana);
-    } else {
-      single[key] = "";
     }
   }
-  if (Object.keys(single).length === 0) {
+  if (layout?.single == null) {
     SINGLE_KEYS.forEach((key, i) => { single[key] = SINGLE_KANA[i]; used.add(SINGLE_KANA[i]); });
   }
 

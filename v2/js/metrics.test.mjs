@@ -179,9 +179,16 @@ test("単打キーの位置・割当・個数はレイアウト定義に従う(�
   const n2 = normalizeLayout(src2);
   assert.deepEqual(buildMoraKeys(n2)["あ"], ["F"]);
 
-  // 単打が空なら既定(F=ん, J=い)にフォールバック。
-  const n3 = normalizeLayout({ mat: defaultLayout().mat, single: {} });
+  // single 未定義なら既定(F=ん, J=い)にフォールバック。
+  const n3 = normalizeLayout({ mat: defaultLayout().mat });
   assert.deepEqual(n3.single, { F: "ん", J: "い" });
+
+  // 空オブジェクト・空文字エントリは「単打なし/そのキーは単打でない」として尊重する。
+  const n4 = normalizeLayout({ mat: defaultLayout().mat, single: {} });
+  assert.deepEqual(n4.single, {});
+  const n5 = normalizeLayout({ mat: defaultLayout().mat, single: { F: "ん", J: "" } });
+  assert.deepEqual(n5.single, { F: "ん" });
+  assert.equal(Object.hasOwn(n5.mat, "JA"), true); // Jの列は行列に復帰
 });
 
 test("キー使用率: キーごとの使用率とweightからeffortを計算する", () => {

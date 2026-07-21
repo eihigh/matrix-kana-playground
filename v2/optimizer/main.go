@@ -3,23 +3,25 @@
 // move(追加/削除)で最適化対象にする。logInterval 反復ごとに effort/flow の推移を出力。
 //
 // 使い方:
-//   go run ./v2/optimizer -config config.json
+//
+//	go run ./v2/optimizer -config config.json
 //
 // config.json 例:
-//   {
-//     "ngram": "v2/data/ngram_data.json",
-//     "layout": "start_layout.json",   // 省略時は既定配置(KANA_LIST順)
-//     "weights": { "pen_flow": { "repeat": 4.0 } },  // 部分上書き(省略時アプリ既定)
-//     "iters": 200000,
-//     "yoonSplit": false,
-//     "lockSingle": false,
-//     "varySingles": true,             // 単打数を最適化対象にする
-//     "minSingles": 1, "maxSingles": 8,
-//     "logInterval": 1000,
-//     "seed": 1,
-//     "polish": true,
-//     "out": "optimized_layout.json"
-//   }
+//
+//	{
+//	  "ngram": "v2/data/ngram_data.json",
+//	  "layout": "start_layout.json",   // 省略時は既定配置(KANA_LIST順)
+//	  "weights": { "pen_flow": { "repeat": 4.0 } },  // 部分上書き(省略時アプリ既定)
+//	  "iters": 200000,
+//	  "yoonSplit": false,
+//	  "lockSingle": false,
+//	  "varySingles": true,             // 単打数を最適化対象にする
+//	  "minSingles": 1, "maxSingles": 8,
+//	  "logInterval": 1000,
+//	  "seed": 1,
+//	  "polish": true,
+//	  "out": "optimized_layout.json"
+//	}
 package main
 
 import (
@@ -29,6 +31,9 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"runtime"
+	"sort"
+	"sync"
 	"time"
 )
 
@@ -52,21 +57,26 @@ type Config struct {
 	Restarts int     `json:"restarts"` // SAラウンド数。各ラウンドは best から T0→TMIN を冷却し切る。既定 2
 	T0Frac   float64 `json:"t0Frac"`   // 既定 0.01
 	TMinFrac float64 `json:"tminFrac"` // 既定 0.0001
+	// マルチスタート: 乱数の影響を均すため、独立な run を並行実行して最良を採用する。
+	Runs    int `json:"runs"`    // 並行シミュレーション数。既定 = CPUコア数
+	Workers int `json:"workers"` // 同時実行数。既定 = min(runs, CPUコア数)
 }
 
 type optimizer struct {
-	cfg   *Config
-	mt    *moraTable
-	ng    *ngramData
-	pen   penTable
-	rng   *rand.Rand
-	cur   Layout
-	curM  Metrics
-	best  Layout
-	bestM Metrics
-	mk    *moraKeysT
-	slots []int // 現在の行列スロット(単打集合に依存)
+	cfg     *Config
+	mt      *moraTable
+	ng      *ngramData
+	pen     penTable
+	rng     *rand.Rand
+	cur     Layout
+	curM    Metrics
+	best    Layout
+	bestM   Metrics
+	mk      *moraKeysT
+	slots   []int // 現在の行列スロット(単打集合に依存)
 	maxFreq float64
+	runID   int         // マルチスタートの run 番号(ログ用)
+	logMu   *sync.Mutex // 並行 run の stdout ログ排他
 }
 
 func (o *optimizer) eval(l *Layout) Metrics {
@@ -93,7 +103,7 @@ func (o *optimizer) syncDerived() {
 
 // 使用頻度に比例した確率でスロットを選ぶ(棄却サンプリング。worker と同じ)。
 func (o *optimizer) pickWeightedSlot() int {
-	for tries := 0; tries < 24; tries++ {
+	for range 24 {
 		slot := o.slots[o.rng.Intn(len(o.slots))]
 		kana := o.cur.mat[slot]
 		if kana < 0 {
@@ -112,7 +122,7 @@ func (o *optimizer) pickWeightedSlot() int {
 
 func (o *optimizer) singleKeys() []int {
 	out := []int{}
-	for k := 0; k < nKeys; k++ {
+	for k := range nKeys {
 		if o.cur.isSingle[k] {
 			out = append(out, k)
 		}
@@ -151,13 +161,13 @@ func (o *optimizer) step(temp float64) bool {
 		// 役割スワップ: 単打キー a ⇄ 通常キー b(b 列を a 列へ写す)
 		a := singles[o.rng.Intn(len(singles))]
 		var firsts []int
-		for k := 0; k < nKeys; k++ {
+		for k := range nKeys {
 			if !o.cur.isSingle[k] {
 				firsts = append(firsts, k)
 			}
 		}
 		b := firsts[o.rng.Intn(len(firsts))]
-		for s := 0; s < nKeys; s++ {
+		for s := range nKeys {
 			o.cur.mat[a*nKeys+s] = o.cur.mat[b*nKeys+s]
 			o.cur.mat[b*nKeys+s] = -1
 		}
@@ -222,7 +232,7 @@ func (o *optimizer) moveAddSingle(singles []int) bool {
 		return false
 	}
 	var firsts []int
-	for k := 0; k < nKeys; k++ {
+	for k := range nKeys {
 		if !o.cur.isSingle[k] {
 			firsts = append(firsts, k)
 		}
@@ -230,7 +240,7 @@ func (o *optimizer) moveAddSingle(singles []int) bool {
 	b := firsts[o.rng.Intn(len(firsts))]
 	// 単打に乗せるかな(頻度重み付き)を b 列以外から選ぶ
 	var pickSlot = -1
-	for tries := 0; tries < 48; tries++ {
+	for range 48 {
 		slot := o.pickWeightedSlot()
 		if slot/nKeys == b {
 			continue
@@ -247,7 +257,7 @@ func (o *optimizer) moveAddSingle(singles []int) bool {
 	o.cur.mat[pickSlot] = -1
 	// b 列のかなを空きへ退避
 	var occupants []int16
-	for s := 0; s < nKeys; s++ {
+	for s := range nKeys {
 		if k := o.cur.mat[b*nKeys+s]; k >= 0 {
 			occupants = append(occupants, k)
 		}
@@ -299,17 +309,9 @@ func (o *optimizer) moveRemoveSingle(singles []int) bool {
 // logInterval ごとに effort/flow の推移を出力する。
 func (o *optimizer) anneal() {
 	interval := o.cfg.LogInterval
-	rounds := o.cfg.Restarts
-	if rounds < 1 {
-		rounds = 1
-	}
-	perRound := o.cfg.Iters / rounds
-	if perRound < 1 {
-		perRound = 1
-	}
-	fmt.Printf("iter\tcurCost\tbestCost\teffort\tflow\tstrokes\tsingles\n")
+	rounds := max(o.cfg.Restarts, 1)
+	perRound := max(o.cfg.Iters/rounds, 1)
 	o.logLine(0)
-	start := time.Now()
 	it := 0
 	for round := 0; round < rounds; round++ {
 		// 各ラウンドは現在の best から。
@@ -329,20 +331,19 @@ func (o *optimizer) anneal() {
 			}
 		}
 	}
-	elapsed := time.Since(start)
-	fmt.Fprintf(os.Stderr, "SA %d 反復 (%dラウンド) %.1fs (%.0f iter/s)\n",
-		it, rounds, elapsed.Seconds(), float64(it)/elapsed.Seconds())
 }
 
-// ログ1行: 現在コストと、best レイアウトの effort/flow/strokes/単打数。
+// ログ1行: run 番号・現在コストと、best レイアウトの effort/flow/strokes/単打数。
 func (o *optimizer) logLine(iter int) {
-	fmt.Printf("%d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%d\n",
-		iter, o.curM.Cost, o.bestM.Cost, o.bestM.Effort, o.bestM.Flow, o.bestM.Strokes, o.best.singleCount())
+	o.logMu.Lock()
+	fmt.Printf("%d\t%d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%d\n",
+		o.runID, iter, o.curM.Cost, o.bestM.Cost, o.bestM.Effort, o.bestM.Flow, o.bestM.Strokes, o.best.singleCount())
+	o.logMu.Unlock()
 }
 
-// polish: 改善が無くなるまで貪欲に詰める。
+// polish: 改善が無くなるまで貪欲に詰める。パス数を返す。
 // ①各配置かなの全スロット移動/スワップ ②単打割当スワップ ③役割スワップ ④単打数±1。
-func (o *optimizer) polish() {
+func (o *optimizer) polish() int {
 	o.cur = o.best
 	o.curM = o.bestM
 	o.syncDerived()
@@ -380,9 +381,8 @@ func (o *optimizer) polish() {
 			o.best = o.cur
 			o.bestM = o.curM
 		}
-		fmt.Fprintf(os.Stderr, "polish pass %d: cost=%.4f\n", pass, o.curM.Cost)
 		if !improved {
-			break
+			return pass
 		}
 	}
 }
@@ -419,14 +419,14 @@ func (o *optimizer) polishSingles() bool {
 			})
 		}
 		// ③ 役割スワップ
-		for b := 0; b < nKeys; b++ {
+		for b := range nKeys {
 			if o.cur.isSingle[b] || !o.cur.isSingle[sk] {
 				continue
 			}
 			b := b
 			sk := sk
 			try(func() bool {
-				for s := 0; s < nKeys; s++ {
+				for s := range nKeys {
 					o.cur.mat[sk*nKeys+s] = o.cur.mat[b*nKeys+s]
 					o.cur.mat[b*nKeys+s] = -1
 				}
@@ -490,34 +490,99 @@ func main() {
 		enforceSplit(&layout, mt)
 	}
 
-	o := &optimizer{
-		cfg: &cfg, mt: mt, ng: ng,
-		pen: compileWeights(cfg.Weights),
-		rng: rand.New(rand.NewSource(cfg.Seed)),
-		cur: layout,
-		mk:  newMoraKeys(len(mt.names)),
-	}
-	o.syncDerived()
-	o.curM = o.eval(&o.cur)
-	o.best = o.cur
-	o.bestM = o.curM
-	fmt.Fprintf(os.Stderr, "開始: cost=%.4f effort=%.4f flow=%.4f strokes=%.4f singles=%d yoonSplit=%v\n",
-		o.curM.Cost, o.curM.Effort, o.curM.Flow, o.curM.Strokes, o.cur.singleCount(), cfg.YoonSplit)
+	pen := compileWeights(cfg.Weights)
 
-	if cfg.Iters > 0 {
-		o.anneal()
-	}
-	if cfg.Polish == nil || *cfg.Polish {
-		o.polish()
+	// 開始状態の評価(全 run 共通の起点)。
+	{
+		mk := newMoraKeys(len(mt.names))
+		buildMoraKeys(&layout, mt, cfg.YoonSplit, mk)
+		m := evaluate(mk, ng, &pen, false)
+		fmt.Fprintf(os.Stderr, "開始: cost=%.4f effort=%.4f flow=%.4f strokes=%.4f singles=%d yoonSplit=%v\n",
+			m.Cost, m.Effort, m.Flow, m.Strokes, layout.singleCount(), cfg.YoonSplit)
 	}
 
-	finalM := o.evalFull(&o.best)
+	// マルチスタート: runs 個の独立シミュレーションを並行実行し、最良を採用する。
+	runs := cfg.Runs
+	if runs <= 0 {
+		runs = runtime.NumCPU()
+	}
+	if cfg.Iters == 0 {
+		runs = 1 // 評価のみなら1回で十分
+	}
+	workers := cfg.Workers
+	if workers <= 0 || workers > runtime.NumCPU() {
+		workers = runtime.NumCPU()
+	}
+	if workers > runs {
+		workers = runs
+	}
+	fmt.Fprintf(os.Stderr, "%d run × %d 反復を並行 %d で実行 (seed %d..%d)\n",
+		runs, cfg.Iters, workers, cfg.Seed, cfg.Seed+int64(runs)-1)
+	fmt.Printf("run\titer\tcurCost\tbestCost\teffort\tflow\tstrokes\tsingles\n")
+
+	type result struct {
+		layout Layout
+		m      Metrics
+	}
+	results := make([]result, runs)
+	var logMu sync.Mutex
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	startT := time.Now()
+	for i := 0; i < runs; i++ {
+		wg.Add(1)
+		go func(runID int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			o := &optimizer{
+				cfg: &cfg, mt: mt, ng: ng, pen: pen,
+				rng:   rand.New(rand.NewSource(cfg.Seed + int64(runID))),
+				cur:   layout,
+				mk:    newMoraKeys(len(mt.names)),
+				runID: runID, logMu: &logMu,
+			}
+			o.syncDerived()
+			o.curM = o.eval(&o.cur)
+			o.best = o.cur
+			o.bestM = o.curM
+			if cfg.Iters > 0 {
+				o.anneal()
+			}
+			passes := 0
+			if cfg.Polish == nil || *cfg.Polish {
+				passes = o.polish()
+			}
+			results[runID] = result{o.best, o.bestM}
+			fmt.Fprintf(os.Stderr, "run %d 完了: cost=%.4f singles=%d (polish %d パス)\n",
+				runID, o.bestM.Cost, o.best.singleCount(), passes)
+		}(i)
+	}
+	wg.Wait()
+
+	// 最良を採用。run 間のばらつきも報告する。
+	bestIdx := 0
+	costs := make([]float64, runs)
+	for i, r := range results {
+		costs[i] = r.m.Cost
+		if r.m.Cost < results[bestIdx].m.Cost {
+			bestIdx = i
+		}
+	}
+	sort.Float64s(costs)
+	fmt.Fprintf(os.Stderr, "全 %d run %.1fs: best=%.4f median=%.4f worst=%.4f (採用 run %d)\n",
+		runs, time.Since(startT).Seconds(), costs[0], costs[runs/2], costs[runs-1], bestIdx)
+
+	best := results[bestIdx].layout
+	mk := newMoraKeys(len(mt.names))
+	buildMoraKeys(&best, mt, cfg.YoonSplit, mk)
+	finalM := evaluate(mk, ng, &pen, true)
 	fmt.Fprintf(os.Stderr, "最終: cost=%.4f effort=%.4f flow=%.4f strokes=%.4f singles=%d\n",
-		finalM.Cost, finalM.Effort, finalM.Flow, finalM.Strokes, o.best.singleCount())
+		finalM.Cost, finalM.Effort, finalM.Flow, finalM.Strokes, best.singleCount())
 	fmt.Fprintf(os.Stderr, "内訳: sfb=%.3f%% sfs=%.3f%% repeat=%.3f%% badRoll=%.3f%% goodRoll=%.3f%% alt=%.3f%%\n",
 		finalM.Rates["sfb"]*100, finalM.Rates["sfs"]*100, finalM.Rates["repeat"]*100,
 		finalM.Rates["badRoll"]*100, finalM.Rates["goodRoll"]*100, finalM.Rates["alt"]*100)
-	fatal(writeLayoutJSON(cfg.Out, &o.best, mt, finalM, &cfg))
+	fatal(writeLayoutJSON(cfg.Out, &best, mt, finalM, &cfg))
 	fmt.Fprintf(os.Stderr, "出力: %s\n", cfg.Out)
 }
 
