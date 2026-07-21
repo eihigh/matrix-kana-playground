@@ -1,13 +1,23 @@
 // optimize.py の fitness() をブラウザへ移植した指標計算。
-// 連接評価は good/bad redirect/roll と repeat/alt/sfb に分類する。
+// 連接評価は index/pinky/middle redirect と roll、repeat/alt/sfb に分類する。
 // SFB と SFS は距離重み付きの加算ペナルティとして flow に統合する。
+//
+// コストの正規化は「質と量の分離」:
+//   effort  = Σkey_effort×打鍵数 / モーラ数(作業量。打鍵数の増減はここに現れる)
+//   flow    = flowSum / 連接数(1連接あたりの質=滑らかさ。連接の本数に依存しない)
+//   strokes = 打鍵数 / モーラ数(w_strokes で打鍵数削減の価値を明示的に調整)
+// flow をモーラあたりにすると「連接を消す」ことが「連接を良くする」ことより
+// 過大評価される(alt が全連接への基礎税になる)ため、質は連接あたりで測る。
+// 差分計算(suggestPlacements)は行列内の入替のみを扱い、キー列長が変わらないので
+// 分母(モーラ数・連接数)はどちらも不変のまま成立する。
 
 import {
   FINGER_ORDER, FID, SECOND_KEYS, KEYMAP, classifyPair, buildMoraKeys, keyDist,
 } from "./layout.js";
 
 // flow内訳の分類種別。redirectはrollと同時発生し、SFSは別途距離重み付きで集計する。
-export const FLOW_CATS = ["goodRedirect", "badRedirect", "goodRoll", "badRoll", "alt", "repeat", "sfb"];
+// redirect は3分類: index(人差し指ホーム/下段を含む) / pinky(小指が絡む) / middle(それ以外)。
+export const FLOW_CATS = ["indexRedirect", "pinkyRedirect", "middleRedirect", "goodRoll", "badRoll", "alt", "repeat", "sfb"];
 
 // 既定の重み(optimize.py CONFIG に対応。連接は pen_flow へ統合)。
 export function defaultWeights() {
@@ -15,6 +25,7 @@ export function defaultWeights() {
     w_effort: 1.0,
     w_order: 0.0,
     w_flow: 1.3,      // 連接分類と距離重み付きSFB/SFSをまとめた重み
+    w_strokes: 0.0,   // 打鍵数/モーラへの追加ペナルティ(key_effort+altが織り込む分を超えて調整する補助ノブ)
     key_effort: {
       Q: 3.0, W: 1.45, E: 1.24, R: 1.15,
       A: 1.27, S: 1.15, D: 0.94, F: 0.85, G: 1.15, V: 1.15,
@@ -23,8 +34,9 @@ export function defaultWeights() {
     },
     // 連接ペナルティ。good/bad redirect/roll はそれぞれ独立に調整できる。
     pen_flow: {
-      goodRedirect: 1.1,
-      badRedirect: 1.5,
+      indexRedirect: 1.1,
+      pinkyRedirect: 1.5,
+      middleRedirect: 1.5,
       goodRoll: 0.0,
       badRoll: 1.5,
       alt: 0.8,
@@ -78,15 +90,27 @@ export function isGoodRedirect(a, b, c) {
   return isRedirectKey(a) || isRedirectKey(b) || isRedirectKey(c);
 }
 
+// redirect の3分類: 人差し指ホーム/下段を含めば index、
+// それ以外で小指が絡めば pinky、どちらでもなければ middle。
+export function redirectCategory(a, b, c) {
+  if (isGoodRedirect(a, b, c)) return "indexRedirect";
+  for (const k of [a, b, c]) {
+    if (fingerKind(KEYMAP[k]) === "P") return "pinkyRedirect";
+  }
+  return "middleRedirect";
+}
+
 // 生の集計器(rate 化する前の和)。
 function newAcc() {
   return {
     finger: new Array(8).fill(0),
     key: Object.fromEntries(SECOND_KEYS.map((key) => [key, 0])),
     total: 0,
+    mora: 0, // 第2モーラの総数(配置に依存しない不変量。モーラあたり正規化の分母)
     totalBg: 0, sfb: 0, sfs: 0, flowSum: 0,
     cnt: {
-      goodRedirect: 0, badRedirect: 0, goodRoll: 0, badRoll: 0,
+      indexRedirect: 0, pinkyRedirect: 0, middleRedirect: 0,
+      goodRoll: 0, badRoll: 0,
       alt: 0, repeat: 0, sfb: 0,
     },
   };
@@ -97,6 +121,7 @@ function cloneAcc(a) {
     finger: a.finger.slice(),
     key: { ...a.key },
     total: a.total,
+    mora: a.mora,
     totalBg: a.totalBg, sfb: a.sfb, sfs: a.sfs, flowSum: a.flowSum,
     cnt: { ...a.cnt },
   };
@@ -107,6 +132,7 @@ function cloneAcc(a) {
 // bikeyのroll等とtrikeyのredirectは別集計で、同じ連接に両方成立すれば両方加算する。
 function accumBigram(acc, k1, k2, freq, pf, sign) {
   const f = sign * freq;
+  acc.mora += f;
   for (const k of k2) {
     const km = KEYMAP[k];
     acc.total += f;
@@ -134,8 +160,7 @@ function accumBigram(acc, k1, k2, freq, pf, sign) {
       cat = isGoodRoll(a, b) ? "goodRoll" : "badRoll";
       pen = pf[cat];
       if (curDir !== 0 && d === -curDir) {
-        const good = isGoodRedirect(run[i - 1], a, b);
-        redirectCat = good ? "goodRedirect" : "badRedirect";
+        redirectCat = redirectCategory(run[i - 1], a, b);
         pen += pf[redirectCat];
       }
       curDir = d;
@@ -169,19 +194,22 @@ function accumBigram(acc, k1, k2, freq, pf, sign) {
   }
 }
 
-// 集計器から指標一式(cost と内訳)を導出する。総和(total/totalBg)を分母に rate 化。
+// 集計器から指標一式(cost と内訳)を導出する。
+// effort/strokes はモーラあたり(量)、flow と内訳表示(flowRates 等)は連接あたり(質)。
 function costFromAcc(acc, w) {
-  const { finger, key, total, totalBg, sfb, sfs, flowSum, cnt } = acc;
-  if (total <= 0 || totalBg <= 0) return { cost: 1e9, valid: false };
+  const { finger, key, total, mora, totalBg, sfb, sfs, flowSum, cnt } = acc;
+  if (total <= 0 || totalBg <= 0 || mora <= 0) return { cost: 1e9, valid: false };
 
   const loads = finger.map((v) => v / total);
   const keyLoads = Object.fromEntries(SECOND_KEYS.map((physicalKey) => [physicalKey, key[physicalKey] / total]));
   const sfbRate = sfb / totalBg;
   const sfsRate = sfs / totalBg;
-  const flow = flowSum / totalBg;
+  const flow = flowSum / totalBg; // 1連接あたりの質(滑らかさ)
+  const strokes = total / mora;   // 打鍵数/モーラ(量)
 
   let effort = 0;
-  for (const physicalKey of SECOND_KEYS) effort += w.key_effort[physicalKey] * keyLoads[physicalKey];
+  for (const physicalKey of SECOND_KEYS) effort += w.key_effort[physicalKey] * key[physicalKey];
+  effort /= mora;
 
   const handPen = (p, r, m, idx) => {
     const mi = (m + idx) / 2;
@@ -194,7 +222,8 @@ function costFromAcc(acc, w) {
   const cost =
     w.w_effort * effort +
     w.w_order * orderPen +
-    w.w_flow * flow;
+    w.w_flow * flow +
+    (w.w_strokes || 0) * strokes;
 
   const flowRates = {};
   for (const c of FLOW_CATS) flowRates[c] = totalBg > 0 ? (cnt[c] || 0) / totalBg : 0;
@@ -203,10 +232,73 @@ function costFromAcc(acc, w) {
 
   return {
     valid: true, cost,
-    effort, orderPen, sfbRate, flow,
+    effort, orderPen, sfbRate, flow, strokes,
     flowRates, keyLoads,
     sfsRate,
   };
+}
+
+// 弱点分析: sfb / repeat / pinkyRedirect / middleRedirect を引き起こす bigram(バイモーラ)を
+// 頻度順にランキングする。accumBigram と同じ「第2モーラ所有」ルールで分類するため、
+// 各カテゴリの合計は連接内訳(flowRates)と一致する。
+// 戻り値: { sfb: [{m1,m2,keys,freq,rate}], repeat: [...], pinkyRedirect: [...], middleRedirect: [...] }(降順・上位 topN)。
+export function collectWeakPoints(ngram, moraKeys, topN = 10) {
+  const buckets = {
+    sfb: new Map(), repeat: new Map(),
+    pinkyRedirect: new Map(), middleRedirect: new Map(),
+  };
+  let totalBg = 0;
+  for (const [m1, m2, freq] of ngram.bigramList) {
+    const k1 = moraKeys[m1];
+    const k2 = moraKeys[m2];
+    if (!k1 || !k2) continue;
+    const run = k1.concat(k2);
+    const L1 = k1.length;
+    let curDir = 0;
+    for (let i = 0; i < run.length - 1; i++) {
+      const a = run[i], b = run[i + 1];
+      const t = classifyPair(a, b);
+      const owned = i >= L1 - 1;
+      if (owned) totalBg += freq;
+      let hit = null;
+      if (t === "repeat") {
+        hit = "repeat"; curDir = 0;
+      } else if (t === "sfb") {
+        hit = "sfb"; curDir = 0;
+      } else if (t === "alt") {
+        curDir = 0;
+      } else { // roll
+        const d = rollDir(a, b);
+        if (curDir !== 0 && d === -curDir) {
+          const cat = redirectCategory(run[i - 1], a, b);
+          if (cat !== "indexRedirect") hit = cat;
+        }
+        curDir = d;
+      }
+      if (owned && hit) {
+        const bucket = buckets[hit];
+        const key = m1 + "\t" + m2;
+        bucket.set(key, (bucket.get(key) || 0) + freq);
+      }
+    }
+  }
+
+  const out = {};
+  for (const [cat, bucket] of Object.entries(buckets)) {
+    out[cat] = [...bucket.entries()]
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, topN)
+      .map(([key, freq]) => {
+        const [m1, m2] = key.split("\t");
+        return {
+          m1, m2,
+          keys: moraKeys[m1].join("") + " " + moraKeys[m2].join(""),
+          freq,
+          rate: totalBg > 0 ? freq / totalBg : 0,
+        };
+      });
+  }
+  return out;
 }
 
 // すべて bigram 駆動。各連接のキー列 keys(m1)++keys(m2)(2〜4キー)を1パスで評価し、
@@ -232,18 +324,25 @@ export function computeMetrics(layout, ngram, weights, moraKeys) {
 // 配置サジェスト: 選択かな mora(現在 curSlot)を各候補スロットへ置いた場合の総コストを
 // 差分計算で高速に評価する。候補 = [{slot, occ}](occ は空文字なら空きスロット)。
 // mora/occ に触れる bigram だけを再計算し(全 6187 件のうちごく一部)、ベースから差分で更新する。
-// total/totalBg は行列内の入替・移動では不変なため差分計算が成立する。
+// total/totalBg/mora は行列内の入替・移動では不変なため差分計算が成立する。
 // tweakThreshold: ΔCost がこの値未満のスロットを「微調整可能(ほぼ無コストで動かせる)」として返す。
+// unitsOf(mora): 拗音分解モード用。モーラを構成する「配置単位かな」の配列を返す
+// (例 しゃ→[し,ゃ])。null/未指定ならモーラ自身が単位。単位かなの移動が
+// それを含む合成モーラの bigram にも波及するよう、索引とキー再導出を単位ベースで行う。
 // 戻り値: { baseCost, results: [{slot, occ, cost, delta}](昇順・上位 topN), tweak: [slot,...] }。
-export function suggestPlacements(ngram, weights, moraKeys, mora, curSlot, candidates, topN = 6, tweakThreshold = 0.0005) {
+export function suggestPlacements(ngram, weights, moraKeys, mora, curSlot, candidates, topN = 6, tweakThreshold = 0.0005, unitsOf = null) {
   const w = weights;
   const pf = w.pen_flow;
+  const unitList = (m) => (unitsOf && unitsOf(m)) || [m];
 
-  // モーラ索引: mora -> それを含む bigram エントリ配列。
+  // 単位索引: 単位かな -> それを(構成要素として)含む bigram エントリ配列。
   const index = new Map();
   for (const e of ngram.bigramList) {
-    let a = index.get(e[0]); if (!a) index.set(e[0], a = []); a.push(e);
-    if (e[1] !== e[0]) { let b = index.get(e[1]); if (!b) index.set(e[1], b = []); b.push(e); }
+    const units = new Set([...unitList(e[0]), ...unitList(e[1])]);
+    for (const u of units) {
+      let a = index.get(u); if (!a) index.set(u, a = []);
+      a.push(e);
+    }
   }
 
   // ベース集計とコスト。
@@ -256,24 +355,37 @@ export function suggestPlacements(ngram, weights, moraKeys, mora, curSlot, candi
   }
   const baseCost = costFromAcc(base, w).cost;
 
+  // 新配置でのモーラのキー列: 単位かなのキーを overrides で差し替えて連結する。
+  // 単位が1つでも未配置(null)なら null(そのモーラは打てない)。
+  const keysWith = (m, overrides) => {
+    const units = unitList(m);
+    if (units.length === 1) {
+      const u = units[0];
+      return u in overrides ? overrides[u] : moraKeys[m];
+    }
+    const parts = units.map((u) => (u in overrides ? overrides[u] : moraKeys[u]));
+    if (parts.some((p) => !p)) return null;
+    return parts.flat();
+  };
+
   const curKeys = [curSlot[0], curSlot.slice(1)];
   const affectedA = index.get(mora) || [];
   const results = [];
 
   for (const { slot, occ } of candidates) {
     const slotKeys = [slot[0], slot.slice(1)];
-    // 差分対象 = mora と occ に触れる bigram(重複排除)。
+    // 差分対象 = mora と occ に(構成要素として)触れる bigram(重複排除)。
     const affected = occ ? new Set(affectedA) : affectedA;
     if (occ) for (const e of (index.get(occ) || [])) affected.add(e);
 
+    const overrides = occ ? { [mora]: slotKeys, [occ]: curKeys } : { [mora]: slotKeys };
     const acc = cloneAcc(base);
     for (const e of affected) {
       const [m1, m2, freq] = e;
       const ok1 = moraKeys[m1], ok2 = moraKeys[m2];
       if (ok1 && ok2) accumBigram(acc, ok1, ok2, freq, pf, -1); // 旧配置を除去
-      // 新配置のキー: mora→slotKeys, occ→curKeys, それ以外は現状。
-      const nk1 = m1 === mora ? slotKeys : (m1 === occ ? curKeys : ok1);
-      const nk2 = m2 === mora ? slotKeys : (m2 === occ ? curKeys : ok2);
+      const nk1 = keysWith(m1, overrides);
+      const nk2 = keysWith(m2, overrides);
       if (nk1 && nk2) accumBigram(acc, nk1, nk2, freq, pf, 1);   // 新配置を加算
     }
     const cost = costFromAcc(acc, w).cost;
@@ -318,7 +430,7 @@ export function classifyStream(moras, moraKeys) {
       const d = rollDir(a, b);
       cat = isGoodRoll(a, b) ? "goodRoll" : "badRoll";
       if (curDir !== 0 && d === -curDir) {
-        redirectCat = isGoodRedirect(keys[i - 1].key, a, b) ? "goodRedirect" : "badRedirect";
+        redirectCat = redirectCategory(keys[i - 1].key, a, b);
       }
       curDir = d;
     }

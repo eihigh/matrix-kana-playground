@@ -5,22 +5,23 @@
 import { classifyStream } from "./metrics.js";
 
 // bigram(m1,m2)を現在の配置で分類し、"good" / "bad" / "" を返す。
-//   good: 全連接が good roll/redirect。bad: bad roll/redirect か sfb を含む。
+//   good: 全連接が good roll/index redirect。bad: bad roll/pinky・middle redirect か sfb を含む。
 //   未配置キーを含む場合は評価不能として ""。
 function classifyBigram(m1, m2, moraKeys) {
   const { steps } = classifyStream([m1, m2], moraKeys);
   if (steps.length === 0) return "";
   const categories = steps.flatMap((step) => step.cats || [step.cat]);
   if (categories.includes("none")) return "";
-  if (categories.some((cat) => cat === "badRedirect" || cat === "badRoll" || cat === "sfb" || cat === "sfs")) return "bad";
-  if (categories.every((cat) => cat === "goodRedirect" || cat === "goodRoll")) return "good";
+  if (categories.some((cat) => cat === "pinkyRedirect" || cat === "middleRedirect" || cat === "badRoll" || cat === "sfb" || cat === "sfs")) return "bad";
+  if (categories.every((cat) => cat === "indexRedirect" || cat === "goodRoll")) return "good";
   return "";
 }
 
 // ngram = { unigram, bigramList, total, rank(Map mora->順位), types }
 // moraKeys = { mora: [key,...] }(現在の配置。キー表示に使う)
 // suggest = { mora, curSlot, list:[{slot,partner,delta}], bestSet } | null
-export function renderDetail(container, mora, ngram, moraKeys, suggest) {
+// unitsOf = 拗音分解モード時: モーラ→構成単位配列(しゃ→[し,ゃ])を返す関数 | null
+export function renderDetail(container, mora, ngram, moraKeys, suggest, unitsOf) {
   if (!mora) {
     container.innerHTML = `<div class="detail-empty">セルを選ぶと、そのかなの使用率（順位）と、前後を含む連接の割合が表示されます。</div>`;
     return;
@@ -53,9 +54,11 @@ export function renderDetail(container, mora, ngram, moraKeys, suggest) {
   }
 
   // 前後を区別せず、選択モーラを含む bigram を割合の高い順に一覧。
+  // 分解モードでは拗音の構成単位(し・ゃ等)としての出現もマッチさせる。
+  const matches = (m) => m === mora || (unitsOf && (unitsOf(m) || []).includes(mora));
   const list = [];
   for (const [m1, m2, c] of ngram.bigramList) {
-    if (m1 === mora || m2 === mora) list.push({ m1, m2, pair: m1 + m2, count: c });
+    if (matches(m1) || matches(m2)) list.push({ m1, m2, pair: m1 + m2, count: c });
   }
   list.sort((a, b) => b.count - a.count);
 

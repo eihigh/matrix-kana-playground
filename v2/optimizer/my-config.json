@@ -1,0 +1,30 @@
+{
+	"ngram": "v2/data/ngram_data.json",
+	"layout": "",
+	"weights": {
+		"w_effort": 0.5,
+		"w_flow": 1.0,
+		"pen_flow": {
+			"indexRedirect": 1.5,
+			"pinkyRedirect": 3.0,
+			"middleRedirect": 1.5,
+			"goodRoll": 0,
+			"badRoll": 1.5,
+			"alt": 1.2,
+			"repeat": 3.0,
+			"sfb": 6.0,
+			"sfs": 1.5
+		}
+	},
+	"iters": 200000,
+	"yoonSplit": true,
+	"lockSingle": false,
+	"varySingles": true,
+	"minSingles": 1,
+	"maxSingles": 12,
+	"logInterval": 1000,
+	"seed": 1,
+	"restarts": 2,
+	"polish": true,
+	"out": "optimized_layout.json"
+}

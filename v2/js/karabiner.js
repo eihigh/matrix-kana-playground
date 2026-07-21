@@ -5,14 +5,14 @@
 //   1..13    = 直前に押された第1キー(どれか)
 // を表す。第1キーを押すと出力せず pending をセットし、続く任意キーが
 // pending と一致して「第1キー+第2キー」のかなを IME にローマ字送出する。
-// 単打キー(F/J)は待機中のみ ん/い を直接送出する。「う」は2打で送出する。
+// 単打キー(レイアウト定義に従う。既定 F/J)は待機中のみ割当かなを直接送出する。
 // 発火条件は「日本語入力ソースが有効(input_source_if language ja)」のとき。
 // 第1キーを押してから 1秒 以内に第2キーが来なければ pending を 0 に戻す
 // (to_delayed_action)。放置しても状態が固まらないようにするため。
 // また pending 中に無関係キー(Backspace・Enter・矢印など)が来たら即座に
 // pending を 0 に戻す(そのキー自体は通す)。
 
-import { FIRST_KEYS, SECOND_KEYS, SINGLE_KEYS, KEY_CODE } from "./layout.js";
+import { SECOND_KEYS, KEY_CODE, singleKeysOf, firstKeysOf } from "./layout.js";
 
 const VAR = "kanachoku_pending";
 
@@ -61,6 +61,7 @@ export const KANA_TO_ROMAJI = {
   "ゔぁ": "va", "ゔぃ": "vi", "ゔ": "vu", "ゔぇ": "ve", "ゔぉ": "vo",
   "てぃ": "thi", "でぃ": "dhi", "しぇ": "she", "じぇ": "je", "ちぇ": "che",
   "ぁ": "la", "ぃ": "li", "ぅ": "lu", "ぇ": "le", "ぉ": "lo",
+  "ゃ": "lya", "ゅ": "lyu", "ょ": "lyo",
   "っ": "ltu", "ー": "-", "、": ",", "。": ".",
 };
 
@@ -94,14 +95,17 @@ const setPending = (v) => ({ set_variable: { name: VAR, value: v } });
 export function buildKarabinerJSON(layout, keyCodes) {
   const kc = keyCodes || KEY_CODE;
   const manipulators = [];
+  // 単打キーと第1キーはレイアウトから導出(単打キーの位置は可変)。
+  const singleKeys = singleKeysOf(layout);
+  const firstKeys = firstKeysOf(singleKeys);
 
-  // 第1キー → pending 値(1..13)。
+  // 第1キー → pending 値(1..第1キー数)。
   const firstIndex = {};
-  FIRST_KEYS.forEach((k, i) => { firstIndex[k] = i + 1; });
+  firstKeys.forEach((k, i) => { firstIndex[k] = i + 1; });
 
   // 1) 完了ルール(pending=i のとき第2キーを押す → かな送出＋リセット)。
   //    条件が互いに排他なので pending 未セットのルールより前に置く。
-  for (const f of FIRST_KEYS) {
+  for (const f of firstKeys) {
     const i = firstIndex[f];
     for (const s of SECOND_KEYS) {
       const kana = layout.mat[f + s];
@@ -119,7 +123,7 @@ export function buildKarabinerJSON(layout, keyCodes) {
 
   // 2) 第1キーの押下(pending=0 → 出力せず pending=i)。
   //    1秒以内に第2キーが来なければ to_delayed_action で pending を 0 に戻す。
-  for (const f of FIRST_KEYS) {
+  for (const f of firstKeys) {
     manipulators.push({
       type: "basic",
       from: { key_code: kc[f] },
@@ -134,8 +138,8 @@ export function buildKarabinerJSON(layout, keyCodes) {
     });
   }
 
-  // 単打キー(pending=0 → ん/い を直接送出)。
-  for (const key of SINGLE_KEYS) {
+  // 単打キー(pending=0 → 割当かなを直接送出)。
+  for (const key of singleKeys) {
     const kana = layout.single[key];
     const to = [];
     if (kana) to.push(...romajiEvents(kana));

@@ -49,9 +49,30 @@ export const KEY_CODE = {
   "M": "m",
 };
 
-// 単打キー(2つ)。ここには ん・い のみ配置(行列には出ない)。
+// 既定の単打キー(2つ)と既定の単打かな。
+// 単打キーの位置・割当はレイアウトごとに自由(layout.single のキー集合が真実)。
+// 以下の定数は既定レイアウトと旧データ互換のためのデフォルト値。
 export const SINGLE_KEYS = ["F", "J"];
 export const SINGLE_KANA = ["ん", "い"];
+
+// レイアウトから単打キー集合を得る。
+export function singleKeysOf(layout) {
+  return Object.keys(layout.single);
+}
+
+// 単打キー集合に対する第1キー集合(単打キーは第1キーになれない)。
+export function firstKeysOf(singleKeys) {
+  return SECOND_KEYS.filter((k) => !singleKeys.includes(k));
+}
+
+// 単打キー集合に対する行列スロット一覧。
+export function matSlotsOf(singleKeys) {
+  const slots = [];
+  for (const f of firstKeysOf(singleKeys)) {
+    for (const s of SECOND_KEYS) slots.push(f + s);
+  }
+  return slots;
+}
 
 // 第2キー(20種)。左右で外側→内側の順に並べ、人差し指の拡張キー(内側ホーム/下段)を
 // 中央寄りにまとめる。中央の仕切りを挟んで 下段 V｜M、その外に 内側ホーム G｜H が
@@ -107,6 +128,25 @@ export const KANA_LIST = [
   "っ", "ー", "、", "。",
 ];
 
+// 分解モード専用の小書きかな(ゃゅょ)。一体モードでは行列に存在せず、
+// モード切替で配置・退避される。ぁぃぅぇぉは両モードで行列に存在する通常かな。
+export const SMALL_YOON = ["ゃ", "ゅ", "ょ"];
+// 合成に使う小書きかな全体(拗音 ゃゅょ + 小書き母音 ぁぃぅぇぉ)。
+const SMALL_ALL = new Set([...SMALL_YOON, "ぁ", "ぃ", "ぅ", "ぇ", "ぉ"]);
+// 分解対象モーラ(拗音33種 + ふぁ・てぃ・しぇ・うぉ・ゔぁ 等の外来語音)。
+export const SPLIT_KANA = KANA_LIST.filter(
+  (m) => m.length === 2 && SMALL_ALL.has(m[1])
+);
+
+// モーラ分解: しゃ → [し, ゃ]、ふぁ → [ふ, ぁ]。分解対象でなければ [そのまま]。
+export function splitMora(mora) {
+  const last = mora[mora.length - 1];
+  if (mora.length >= 2 && SMALL_ALL.has(last)) {
+    return [mora.slice(0, -1), last];
+  }
+  return [mora];
+}
+
 // 2キー連接の分類: repeat(同キー) / sfb(同指別キー) / roll(同手別指) / alt(逆手)。
 export function classifyPair(k1, k2) {
   if (k1 === k2) return "repeat";
@@ -124,16 +164,27 @@ export function keyDist(k1, k2) {
 }
 
 // あるモーラを打つ物理キー列を返す(行列は2キー、単打は1キー)。
-// layout = { mat: {slotId: kana}, single: {F,J: kana} }。
-export function buildMoraKeys(layout) {
+// layout = { mat: {slotId: kana}, single: {key: kana} }。
+// mat/single のキー集合はレイアウト自身が持つ(単打キーの位置は固定しない)。
+// yoonSplit=true(拗音分解モード)では、拗音のキー列を配置からではなく
+// 「基底かな＋小書きかな」の連結として導出する(しゃ = keys(し)++keys(ゃ))。
+// ngram のモーラ集合はそのままなので、モーラあたり正規化はモード間で比較可能。
+export function buildMoraKeys(layout, yoonSplit = false) {
   const moraKeys = {};
-  for (const slot of MAT_SLOTS) {
-    const kana = layout.mat[slot];
+  for (const [slot, kana] of Object.entries(layout.mat)) {
     if (kana) moraKeys[kana] = [slot[0], slot.slice(1)];
   }
-  for (const key of SINGLE_KEYS) {
-    const kana = layout.single[key];
+  for (const [key, kana] of Object.entries(layout.single)) {
     if (kana) moraKeys[kana] = [key];
+  }
+  if (yoonSplit) {
+    for (const mora of SPLIT_KANA) {
+      delete moraKeys[mora]; // 万一配置が残っていても分解合成を優先
+      const [base, small] = splitMora(mora);
+      if (moraKeys[base] && moraKeys[small]) {
+        moraKeys[mora] = [...moraKeys[base], ...moraKeys[small]];
+      }
+    }
   }
   return moraKeys;
 }

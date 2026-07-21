@@ -1,9 +1,9 @@
 // かな直 Playground v2 — 統合エントリ。
 import {
-  FIRST_KEYS, SECOND_KEYS, SINGLE_KEYS, KEYMAP, KEY_CODE,
-  MAT_SLOTS, classifyPair, buildMoraKeys, defaultLayout, cloneLayout,
+  SECOND_KEYS, KEYMAP, KEY_CODE, SMALL_YOON, SPLIT_KANA, splitMora,
+  singleKeysOf, matSlotsOf, classifyPair, buildMoraKeys, defaultLayout, cloneLayout,
 } from "./layout.js";
-import { computeMetrics, defaultWeights, classifyStream, suggestPlacements } from "./metrics.js";
+import { computeMetrics, defaultWeights, classifyStream, suggestPlacements, collectWeakPoints } from "./metrics.js";
 import { renderDetail } from "./detail.js";
 import { initTyping } from "./typing.js";
 import { textToMoras } from "./romaji.js";
@@ -15,6 +15,9 @@ import { exportKarabinerString } from "./karabiner.js";
 // ---- 状態 ----
 const state = {
   ngram: null,
+  ngramData: null, // 生の ngram データ(モード切替時の再構築用)
+  yoonSplit: false, // 拗音分解モード(しゃ→し+ゃ。ゃゅょを行列に配置)
+  yoonStash: {}, // モード切替で外したかなの退避先 { kana: slot }
   layout: defaultLayout(),
   weights: defaultWeights(),
   metrics: null,
@@ -32,22 +35,25 @@ const state = {
 let worker = null;
 const cellEls = {};   // slotId -> element
 const singleEls = {}; // key -> element
+const gheadEls = {};  // 列ヘッダ(第1キー)key -> element(単打かなの併記更新用)
 
 // ---- 指標行 / 重み定義 ----
 const METRIC_ROWS = [
   { key: "effort", label: "キーeffort", pct: false, wpath: ["w_effort"], wl: "w_effort", wmax: 5 },
   { key: "flow", label: "flow(連接)", pct: false, wpath: ["w_flow"], wl: "w_flow", wmax: 5 },
+  { key: "strokes", label: "打鍵数/モーラ", pct: false, wpath: ["w_strokes"], wl: "w_strokes", wmax: 3 },
   { key: "orderPen", label: "順序ペナルティ", pct: false, wpath: ["w_order"], wl: "w_order", wmax: 5 },
 ];
 
 // 連接内訳の種別(現状値の表示と、対応する pen_flow 重みスライダーを併設)。
 // SFSは距離重み付きの加算項なので、通常のbikey/redirect分類とは分けて定義する。
-const FLOW_TYPES = ["goodRedirect", "badRedirect", "goodRoll", "badRoll", "alt", "repeat", "sfb"];
+const FLOW_TYPES = ["indexRedirect", "pinkyRedirect", "middleRedirect", "goodRoll", "badRoll", "alt", "repeat", "sfb"];
 const FLOW_BREAK_TYPES = [...FLOW_TYPES, "sfs"];
 
 const FLOW_CAT_META = {
-  goodRedirect: { label: "良反", legend: "good redirect" },
-  badRedirect: { label: "悪反", legend: "bad redirect" },
+  indexRedirect: { label: "人反", legend: "index redirect" },
+  pinkyRedirect: { label: "小反", legend: "pinky redirect" },
+  middleRedirect: { label: "中反", legend: "middle redirect" },
   goodRoll: { label: "良ロ", legend: "good roll" },
   badRoll: { label: "悪ロ", legend: "bad roll" },
   alt: { label: "互", legend: "交互(alt)" },
@@ -70,13 +76,15 @@ const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[char]));
 
-// 現在のレイアウト・重み・単打固定・キー割当を localStorage に保存。
+// 現在のレイアウト・重み・単打固定・キー割当・拗音モードを localStorage に保存。
 function saveState() {
   saveLocal({
     layout: state.layout,
     weights: state.weights,
     lockSingle: state.lockSingle,
     keyCodes: state.keyCodes,
+    yoonSplit: state.yoonSplit,
+    yoonStash: state.yoonStash,
   });
 }
 
@@ -85,8 +93,7 @@ init();
 
 async function init() {
   const res = await fetch("./data/ngram_data.json");
-  const data = await res.json();
-  state.ngram = buildNgram(data);
+  state.ngramData = await res.json();
 
   const saved = loadLocal();
   if (saved) {
@@ -94,10 +101,18 @@ async function init() {
     if (saved.weights) state.weights = mergeWeights(defaultWeights(), migrateWeights(saved.weights));
     state.lockSingle = !!saved.lockSingle;
     if (saved.keyCodes) state.keyCodes = { ...KEY_CODE, ...saved.keyCodes };
+    state.yoonSplit = !!saved.yoonSplit;
+    if (saved.yoonStash) state.yoonStash = saved.yoonStash;
+  }
+  rebuildNgram();
+  // 分解モードで保存されていた場合、配置の不変条件を復元時にも強制する
+  // (旧仕様の保存データに外来語音が残っている場合の自己修復を兼ねる)。
+  if (state.yoonSplit) {
+    enforceYoonMode();
+    saveState();
   }
 
-  buildGrid();
-  buildSingles();
+  ensureStructure();
   buildMetricRows();
   buildLoads();
   buildBreakdowns();
@@ -142,6 +157,72 @@ function buildNgram(data) {
   const rareThreshold = unigram["ぬ"] || 0;
   const rareSet = new Set(Object.keys(unigram).filter((m) => unigram[m] < rareThreshold));
   return { unigram, bigramList, total, rank, types: sorted.length, refFreq, rareThreshold, rareSet };
+}
+
+// 現在のモードに応じて state.ngram を再構築する。
+// 分解モードでは unigram を単位かなの実効頻度へ変換する(し += しゃ/しゅ/しょ 等、
+// ゃ = Σ拗音。グリッド頻度バー・レア判定・最適化の重み付き選択に効く)。
+// bigramList は変換しない: 拗音のキー列は buildMoraKeys が「基底+小書き」の連結として
+// 導出するので、モーラあたり正規化の分母がモード間で不変に保たれる。
+function rebuildNgram() {
+  const data = state.ngramData;
+  if (!state.yoonSplit) {
+    state.ngram = buildNgram(data);
+    return;
+  }
+  const unigram = {};
+  for (const [m, c] of Object.entries(data.unigram || {})) {
+    for (const u of splitMora(m)) unigram[u] = (unigram[u] || 0) + c;
+  }
+  state.ngram = buildNgram({ unigram, bigram: data.bigram });
+}
+
+// suggestPlacements 用: 分解モードでは分解対象モーラを構成単位 [基底, 小書き] に展開する。
+function unitsOfMora(m) {
+  if (!state.yoonSplit) return null;
+  const units = splitMora(m);
+  return units.length === 2 ? units : null;
+}
+
+// 現在のモードに合わせて配置の不変条件を強制する:
+// 分解モードなら分解対象モーラ(拗音・外来語音)を退避して ゃゅょ を配置、一体モードなら逆。
+// リセット・インポート・起動時など、レイアウトを外から差し替えた後にも呼ぶ。
+function enforceYoonMode() {
+  const mat = state.layout.mat;
+  const single = state.layout.single;
+  const deactivate = state.yoonSplit ? SPLIT_KANA : SMALL_YOON;
+  const activate = state.yoonSplit ? SMALL_YOON : SPLIT_KANA;
+  for (const [slot, kana] of Object.entries(mat)) {
+    if (kana && deactivate.includes(kana)) {
+      state.yoonStash[kana] = slot;
+      mat[slot] = "";
+    }
+  }
+  for (const [key, kana] of Object.entries(single)) {
+    if (kana && deactivate.includes(kana)) {
+      state.yoonStash[kana] = "";
+      single[key] = "";
+    }
+  }
+  const placed = new Set([...Object.values(mat), ...Object.values(single)].filter(Boolean));
+  const slots = getMatSlots();
+  for (const kana of activate) {
+    if (placed.has(kana)) continue;
+    let slot = state.yoonStash[kana];
+    if (!slot || !(slot in mat) || mat[slot]) slot = slots.find((s) => !mat[s]);
+    if (slot) {
+      mat[slot] = kana;
+      placed.add(kana);
+    }
+  }
+}
+
+// 拗音分解モードの切替。
+function applyYoonMode(split) {
+  state.yoonSplit = split;
+  enforceYoonMode();
+  rebuildNgram();
+  onLayoutEdited();
 }
 
 // あるかなが「ぬ」より低頻度(レア)か。頻度データに無いものもレア扱い。
@@ -204,6 +285,12 @@ function migrateWeights(weights) {
     if (old.goodRoll == null && (old.inroll != null || old.outroll != null)) {
       old.goodRoll = Math.min(old.inroll ?? Infinity, old.outroll ?? Infinity);
     }
+    // 旧 good/bad redirect → index/pinky/middle redirect(pinky と middle は旧 bad を引き継ぐ)。
+    if (old.indexRedirect == null && old.goodRedirect != null) old.indexRedirect = old.goodRedirect;
+    if (old.pinkyRedirect == null && old.badRedirect != null) old.pinkyRedirect = old.badRedirect;
+    if (old.middleRedirect == null && old.badRedirect != null) old.middleRedirect = old.badRedirect;
+    delete old.goodRedirect;
+    delete old.badRedirect;
   }
   return migrated;
 }
@@ -211,6 +298,20 @@ function migrateWeights(weights) {
 // ================= グリッド構築 =================
 // 最初の右手キー(左右境界のセパレータ用)。
 const SEP_KEY = SECOND_KEYS.find((k) => KEYMAP[k].hand === "R");
+
+// 現在のレイアウトから単打キー集合/行列スロットを導出(単打キーの位置は可変)。
+const getSingleKeys = () => singleKeysOf(state.layout);
+const getMatSlots = () => matSlotsOf(getSingleKeys());
+
+// グリッド・単打パネルは単打キー集合に依存する。集合が変わったら再構築する。
+let builtSingleSig = null;
+function ensureStructure() {
+  const sig = getSingleKeys().join(",");
+  if (sig === builtSingleSig) return;
+  builtSingleSig = sig;
+  buildGrid();
+  buildSingles();
+}
 
 // キー組の性質による色クラス(かなに依らない)。
 function keyPairColor(f, s) {
@@ -223,22 +324,27 @@ function keyPairColor(f, s) {
 
 function buildGrid() {
   const grid = $("grid");
+  const singleKeys = getSingleKeys();
   grid.style.gridTemplateColumns = `26px repeat(${SECOND_KEYS.length}, minmax(30px, 1fr))`;
   grid.innerHTML = "";
+  for (const k of Object.keys(cellEls)) delete cellEls[k];
+  for (const k of Object.keys(gheadEls)) delete gheadEls[k];
 
-  // ヘッダ行: 列 = 第1キー
+  // ヘッダ行: 列 = 第1キー。単打キーは割当かなを「F/ん」形式で併記(renderGridで更新)。
   grid.appendChild(el("div", "ghead", "2\\1"));
   for (const f of SECOND_KEYS) {
-    grid.appendChild(el("div", "ghead" + (f === SEP_KEY ? " sep-l" : ""), f));
+    const h = el("div", "ghead" + (f === SEP_KEY ? " sep-l" : ""), f);
+    gheadEls[f] = h;
+    grid.appendChild(h);
   }
 
-  // 本体: 行 = 第2キー、列 = 第1キー。単打キー(F/J)の列は無効セルとして描画する。
+  // 本体: 行 = 第2キー、列 = 第1キー。単打キーの列は無効セルとして描画する。
   SECOND_KEYS.forEach((s) => {
     grid.appendChild(
       el("div", "rhead" + (s === SEP_KEY ? " sep-t" : ""), s)
     );
     SECOND_KEYS.forEach((f) => {
-      const single = SINGLE_KEYS.includes(f);
+      const single = singleKeys.includes(f);
       if (single) {
         // 無効セル: 色ルールは適用しつつ斜線ハッチを重ねる。操作は受け付けない。
         const inv = document.createElement("div");
@@ -279,16 +385,84 @@ function buildGrid() {
 function buildSingles() {
   const box = $("singles");
   box.innerHTML = "";
-  SINGLE_KEYS.forEach((key) => {
+  for (const k of Object.keys(singleEls)) delete singleEls[k];
+  getSingleKeys().forEach((key) => {
     const s = document.createElement("div");
     s.className = "single-slot";
     s.dataset.single = key;
     s.draggable = true;
-    s.innerHTML = `<span class="k">${key}（単打）</span><span class="v"></span>`;
+    s.innerHTML = `<span class="k">${key}（単打）</span><span class="v"></span>` +
+      `<button class="single-x" title="単打を解除して行列の第1キーに戻す（かなは空きスロットへ）">×</button>`;
+    s.querySelector(".single-x").addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeSingleKey(key);
+    });
     attachCellEvents(s, "single", key);
     singleEls[key] = s;
     box.appendChild(s);
   });
+  const add = document.createElement("button");
+  add.className = "single-add";
+  add.textContent = "＋ 単打を追加";
+  add.title = "単打キーを1つ追加（列の使用頻度が最小のキーを単打化。かなはドラッグか最適化で割当）";
+  add.addEventListener("click", addSingleKey);
+  box.appendChild(add);
+}
+
+// 単打キーを1つ追加する。列の総頻度が最小の第1キーを単打化し、
+// その列のかなは空きスロットへ退避する。どのキーが単打かは最適化(役割スワップ)で動く。
+function addSingleKey() {
+  if (state.optimizing || state.stopping) return;
+  const singles = getSingleKeys();
+  const firsts = SECOND_KEYS.filter((k) => !singles.includes(k));
+  if (firsts.length <= 1) return;
+  const mat = state.layout.mat;
+  let bestKey = null, bestLoad = Infinity;
+  for (const f of firsts) {
+    let load = 0;
+    for (const s of SECOND_KEYS) {
+      const kana = mat[f + s];
+      if (kana) load += state.ngram.unigram[kana] || 0;
+    }
+    if (load < bestLoad) { bestLoad = load; bestKey = f; }
+  }
+  const occupants = SECOND_KEYS.map((s) => mat[bestKey + s]).filter(Boolean);
+  const newSingles = [...singles, bestKey];
+  const newSlots = matSlotsOf(newSingles);
+  const newMat = {};
+  for (const slot of newSlots) newMat[slot] = mat[slot] || "";
+  const empties = newSlots.filter((s) => !newMat[s]);
+  if (empties.length < occupants.length) {
+    alert("空きスロットが足りないため単打を追加できません");
+    return;
+  }
+  occupants.forEach((kana, i) => { newMat[empties[i]] = kana; });
+  state.layout.mat = newMat;
+  state.layout.single[bestKey] = "";
+  onLayoutEdited();
+}
+
+// 単打キーを解除して行列の第1キーへ戻す。割当かなは空きスロットへ移す。
+function removeSingleKey(key) {
+  if (state.optimizing || state.stopping) return;
+  const singles = getSingleKeys();
+  if (singles.length <= 1) return; // 単打0は不可
+  const kana = state.layout.single[key];
+  delete state.layout.single[key];
+  const mat = state.layout.mat;
+  const newSlots = matSlotsOf(getSingleKeys());
+  const newMat = {};
+  for (const slot of newSlots) newMat[slot] = mat[slot] || "";
+  if (kana) {
+    const empty = newSlots.find((s) => !newMat[s]);
+    if (empty) newMat[empty] = kana;
+  }
+  state.layout.mat = newMat;
+  if (state.selected && state.selected.kind === "single" && state.selected.id === key) {
+    state.selected = null;
+    state.suggest = null;
+  }
+  onLayoutEdited();
 }
 
 function el(tag, cls, text) {
@@ -306,7 +480,7 @@ function attachCellEvents(cell, kind, id) {
     e.dataTransfer.effectAllowed = "move";
   });
   cell.addEventListener("dragover", (e) => {
-    if (dragSrc && dragSrc.kind === kind) {
+    if (dragSrc) {
       e.preventDefault();
       cell.classList.add("dragover");
     }
@@ -315,8 +489,15 @@ function attachCellEvents(cell, kind, id) {
   cell.addEventListener("drop", (e) => {
     e.preventDefault();
     cell.classList.remove("dragover");
-    if (dragSrc && dragSrc.kind === kind && dragSrc.id !== id) {
-      swap(kind, dragSrc.id, id);
+    if (dragSrc && (dragSrc.kind !== kind || dragSrc.id !== id)) {
+      if (dragSrc.kind === kind) {
+        swap(kind, dragSrc.id, id);
+      } else {
+        // 行列⇄単打のクロススワップ(かなを単打にする/行列へ戻す)。
+        const matSlot = kind === "mat" ? id : dragSrc.id;
+        const singleKey = kind === "single" ? id : dragSrc.id;
+        swapCross(matSlot, singleKey);
+      }
     }
     dragSrc = null;
   });
@@ -340,6 +521,14 @@ function swap(kind, a, b) {
   onLayoutEdited();
 }
 
+// 行列スロットと単打キーのかなを入れ替える(どのかなを単打にするかの手動編集)。
+function swapCross(matSlot, singleKey) {
+  const t = state.layout.mat[matSlot];
+  state.layout.mat[matSlot] = state.layout.single[singleKey];
+  state.layout.single[singleKey] = t;
+  onLayoutEdited();
+}
+
 function selectCell(kind, id) {
   const mora = kind === "mat" ? state.layout.mat[id] : state.layout.single[id];
   state.selected = { kind, id, mora };
@@ -359,16 +548,16 @@ function computeSuggestions() {
   const mora = sel.mora;
   const curSlot = sel.id;
   const mat = state.layout.mat;
-  const moraKeys = buildMoraKeys(state.layout);
+  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
   const candidates = [];
-  for (const slot of MAT_SLOTS) {
+  for (const slot of getMatSlots()) {
     if (slot === curSlot) continue;
     const occ = mat[slot];
     if (occ === mora) continue;
     candidates.push({ slot, occ });
   }
   const { baseCost, results, tweak } = suggestPlacements(
-    state.ngram, state.weights, moraKeys, mora, curSlot, candidates, 6);
+    state.ngram, state.weights, moraKeys, mora, curSlot, candidates, 6, 0.0005, unitsOfMora);
   const list = results.map((r) => ({ slot: r.slot, partner: r.occ, delta: r.delta }));
   const bestSet = new Set(list.filter((r) => r.delta < 0).map((r) => r.slot));
   // ΔCost が +0.0005 未満のスロット=「微調整可能(ほぼ無コストで動かせる)」。
@@ -480,7 +669,9 @@ function buildLoads() {
 
 // ================= 計算 =================
 function recomputeLocal() {
-  state.metrics = computeMetrics(state.layout, state.ngram, state.weights);
+  state.metrics = computeMetrics(
+    state.layout, state.ngram, state.weights,
+    buildMoraKeys(state.layout, state.yoonSplit));
 }
 
 // ================= 描画 =================
@@ -491,16 +682,27 @@ function renderAll() {
   renderWeightValues();
   renderDetailPanel();
   renderFlowExample();
+  renderWeakPoints();
   renderIter();
 }
 
 function renderGrid() {
-  const moraKeys = buildMoraKeys(state.layout);
+  ensureStructure();
+  // 列ヘッダ: 単打キーは割当かなを併記(割当は再構築なしでも変わるので毎回更新)。
+  for (const [key, h] of Object.entries(gheadEls)) {
+    const kana = state.layout.single[key];
+    if (key in state.layout.single) {
+      h.innerHTML = `${escapeHtml(key)}<span class="gh-kana">/${escapeHtml(kana || "–")}</span>`;
+    } else if (h.textContent !== key) {
+      h.textContent = key;
+    }
+  }
+  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
   const neighbors = computeNeighbors(moraKeys);
   // タイピング練習の現在かなの行列スロット(2キーのモーラのみ)。
   const tKeys = state.typingKana ? moraKeys[state.typingKana] : null;
   const tSlot = tKeys && tKeys.length === 2 ? tKeys[0] + tKeys[1] : null;
-  for (const slot of MAT_SLOTS) {
+  for (const slot of getMatSlots()) {
     const cell = cellEls[slot];
     const kana = state.layout.mat[slot];
     cell._kv.textContent = kana || "";
@@ -526,10 +728,11 @@ function renderGrid() {
 }
 
 function renderSingles() {
-  const moraKeys = buildMoraKeys(state.layout);
+  ensureStructure();
+  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
   const tKeys = state.typingKana ? moraKeys[state.typingKana] : null;
   const tSingle = tKeys && tKeys.length === 1 ? tKeys[0] : null;
-  SINGLE_KEYS.forEach((key) => {
+  getSingleKeys().forEach((key) => {
     const s = singleEls[key];
     s.querySelector(".v").textContent = state.layout.single[key] || "";
     s.classList.toggle("selected", isSelected("single", key));
@@ -547,14 +750,16 @@ function computeNeighbors(moraKeys) {
   const set = new Set();
   if (!state.selected || !state.selected.mora) return set;
   const mora = state.selected.mora;
+  // 分解モードでは拗音の構成単位(し・ゃ等)としての出現もマッチさせる。
+  const matches = (m) => m === mora || (unitsOfMora(m) || []).includes(mora);
   const partners = [];
   for (const [m1, m2, c] of state.ngram.bigramList) {
-    if (m1 === mora) partners.push([m2, c]);
-    else if (m2 === mora) partners.push([m1, c]);
+    if (matches(m1)) partners.push([m2, c]);
+    else if (matches(m2)) partners.push([m1, c]);
   }
   partners.sort((a, b) => b[1] - a[1]);
   const slotOf = {};
-  for (const slot of MAT_SLOTS) {
+  for (const slot of getMatSlots()) {
     const k = state.layout.mat[slot];
     if (k) slotOf[k] = slot;
   }
@@ -601,16 +806,16 @@ function renderWeightValues() {
 }
 
 function renderDetailPanel() {
-  const moraKeys = buildMoraKeys(state.layout);
+  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
   const mora = state.selected ? state.selected.mora : null;
-  renderDetail($("detail"), mora, state.ngram, moraKeys, state.suggest);
+  renderDetail($("detail"), mora, state.ngram, moraKeys, state.suggest, unitsOfMora);
 }
 
 // 例文を現在の配置で打鍵したときの連接分類を可視化(実ストリーム)。
 function renderFlowExample() {
   const box = $("flowExample");
   if (!box) return;
-  const moraKeys = buildMoraKeys(state.layout);
+  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
   const input = $("flowExampleInput");
   const moras = textToMoras(input ? input.value : "", Object.keys(moraKeys));
   const { keys, steps } = classifyStream(moras, moraKeys);
@@ -645,6 +850,28 @@ function renderFlowExample() {
   html += `<div class="flowex-legend">${legend}</div>`;
 
   box.innerHTML = html;
+}
+
+// 配列の弱点: sfb / repeat / pinky・middle redirect を引き起こすバイモーラの頻度ランキング。
+const WEAK_CATS = ["sfb", "repeat", "pinkyRedirect", "middleRedirect"];
+function renderWeakPoints() {
+  const box = $("weakPoints");
+  if (!box) return;
+  const moraKeys = buildMoraKeys(state.layout, state.yoonSplit);
+  const weak = collectWeakPoints(state.ngram, moraKeys, 10);
+  const cols = WEAK_CATS.map((cat) => {
+    const meta = FLOW_CAT_META[cat];
+    const rows = weak[cat].map((e) => `<div class="wk-row">
+        <span class="wk-pair">${escapeHtml(e.m1 + e.m2)}</span>
+        <span class="wk-keys">${escapeHtml(e.keys.toLowerCase())}</span>
+        <span class="wk-val">${fmtPct(e.rate)}</span>
+      </div>`).join("") || `<div class="wk-empty">なし</div>`;
+    return `<div class="weak-col">
+      <span class="wk-head cat-${cat}">${meta.legend}</span>
+      ${rows}
+    </div>`;
+  }).join("");
+  box.innerHTML = `<div class="weak-cols">${cols}</div>`;
 }
 
 function renderIter() {
@@ -684,6 +911,11 @@ function renderIter() {
     bp.classList.remove("running");
     bp.disabled = false;
   }
+  // 拗音モード・単打数の変更は最適化中に不可(ワーカー側の状態と食い違うため)。
+  const busy = state.optimizing || state.stopping;
+  const yoonCb = $("yoonSplit");
+  if (yoonCb) yoonCb.disabled = busy;
+  document.querySelectorAll(".single-add, .single-x").forEach((b) => { b.disabled = busy; });
 }
 
 // ================= ツールバー・最適化 =================
@@ -692,6 +924,7 @@ function wireToolbar() {
   $("btnPolish").addEventListener("click", togglePolish);
   $("btnReset").addEventListener("click", () => {
     state.layout = defaultLayout();
+    enforceYoonMode(); // 分解モード中は拗音・外来語音を外して ゃゅょ を配置し直す
     onLayoutEdited();
   });
   $("btnExport").addEventListener("click", openExport);
@@ -708,6 +941,17 @@ function wireToolbar() {
     }
     saveState();
     renderSingles();
+  });
+
+  // 拗音分解モード。最適化中は切り替え不可(チェックボックスは renderIter で無効化)。
+  const yoonCb = $("yoonSplit");
+  yoonCb.checked = state.yoonSplit;
+  yoonCb.addEventListener("change", () => {
+    if (state.optimizing || state.stopping) {
+      yoonCb.checked = state.yoonSplit;
+      return;
+    }
+    applyYoonMode(yoonCb.checked);
   });
 }
 
@@ -747,6 +991,7 @@ function scheduleRender() {
     renderMetrics();
     renderDetailPanel();
     renderFlowExample();
+    renderWeakPoints();
     renderIter();
   });
 }
@@ -767,6 +1012,7 @@ function toggleOptimize() {
       ngram: state.ngram,
       weights: state.weights,
       lockSingle: state.lockSingle,
+      yoonSplit: state.yoonSplit,
     });
     renderIter();
   }
@@ -797,6 +1043,7 @@ function startPolish() {
     ngram: state.ngram,
     weights: state.weights,
     lockSingle: state.lockSingle,
+    yoonSplit: state.yoonSplit,
   });
   renderIter();
 }
@@ -825,6 +1072,7 @@ function openImport() {
   openDialog("配列をインポート（ファイル選択 または JSONを貼り付け）", "", "読み込む", (txt) => {
     try {
       state.layout = parseLayoutJSON(txt);
+      enforceYoonMode(); // 分解モード中に一体形式をインポートした場合も不変条件を保つ
       dlg.close();
       onLayoutEdited();
     } catch (err) {

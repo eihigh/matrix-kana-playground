@@ -1,0 +1,16 @@
+{
+  "ngram": "v2/data/ngram_data.json",
+  "layout": "",
+  "weights": {},
+  "iters": 200000,
+  "yoonSplit": false,
+  "lockSingle": false,
+  "varySingles": true,
+  "minSingles": 1,
+  "maxSingles": 8,
+  "logInterval": 1000,
+  "seed": 1,
+  "restarts": 2,
+  "polish": true,
+  "out": "optimized_layout.json"
+}

@@ -1,34 +1,39 @@
 // レイアウトと重みの import/export / localStorage 保存。
 
-import { MAT_SLOTS, SINGLE_KEYS, SINGLE_KANA } from "./layout.js";
+import { SECOND_KEYS, SINGLE_KEYS, SINGLE_KANA, matSlotsOf } from "./layout.js";
 
 const LS_KEY = "kanachoku_v2";
 
-// 旧F/J/K単打レイアウトを含む入力を、F/J単打＋「う」行列配置へ正規化する。
+// レイアウトを検証・正規化する。単打キーの位置・割当・個数は入力の layout.single に従う
+// (自由化: どのキーが単打か、何を単打にするかは事前に決めない)。
+// - 単打キーが不正/空なら既定(F/J に ん・い)へフォールバック
+// - 行列は単打キー集合から導出したスロットのみ保持
+// - かなの重複は単打優先→行列先勝ちで除去
 export function normalizeLayout(layout) {
-  const mat = Object.fromEntries(MAT_SLOTS.map((slot) => [slot, layout?.mat?.[slot] || ""]));
-  for (const slot of MAT_SLOTS) {
-    if (SINGLE_KANA.includes(mat[slot])) mat[slot] = "";
-  }
-  if (!Object.values(mat).includes("う")) {
-    const emptySlot = MAT_SLOTS.find((slot) => !mat[slot]);
-    if (emptySlot) mat[emptySlot] = "う";
-  }
-
   const single = {};
   const used = new Set();
-  for (const key of SINGLE_KEYS) {
-    const kana = layout?.single?.[key];
-    if (SINGLE_KANA.includes(kana) && !used.has(kana)) {
+  for (const [key, kana] of Object.entries(layout?.single || {})) {
+    if (!SECOND_KEYS.includes(key) || key in single) continue;
+    if (kana && !used.has(kana)) {
       single[key] = kana;
       used.add(kana);
     } else {
       single[key] = "";
     }
   }
-  const missing = SINGLE_KANA.filter((kana) => !used.has(kana));
-  for (const key of SINGLE_KEYS) {
-    if (!single[key]) single[key] = missing.shift() || "";
+  if (Object.keys(single).length === 0) {
+    SINGLE_KEYS.forEach((key, i) => { single[key] = SINGLE_KANA[i]; used.add(SINGLE_KANA[i]); });
+  }
+
+  const mat = {};
+  for (const slot of matSlotsOf(Object.keys(single))) {
+    const kana = layout?.mat?.[slot] || "";
+    if (kana && !used.has(kana)) {
+      mat[slot] = kana;
+      used.add(kana);
+    } else {
+      mat[slot] = "";
+    }
   }
   return { mat, single };
 }
@@ -43,7 +48,8 @@ export function exportLayoutJSON(layout, metrics) {
       sfbRate: metrics?.sfbRate,
       sfsRate: metrics?.sfsRate,
       flow: metrics?.flow,
-      note: "かな直 v2 配列。mat=行列(18×20=360), single=単打(F/J)。人差し指拡張版(G/H/V/M)。",
+      strokes: metrics?.strokes,
+      note: "かな直 v2 配列。mat=行列(第1キー×第2キー), single=単打(キー位置は可変)。人差し指拡張版(G/H/V/M)。",
     },
     mat: { ...layout.mat },
     single: { ...layout.single },
@@ -54,17 +60,14 @@ export function exportLayoutJSON(layout, metrics) {
 // JSON 文字列をレイアウトへ変換。旧来のフラット形式にも一応対応。
 export function parseLayoutJSON(text) {
   const obj = JSON.parse(text);
+  if (obj.mat && obj.single) {
+    return normalizeLayout({ mat: obj.mat, single: obj.single });
+  }
+  // フラット形式(slotId をトップレベルに持つ。単打は既定キーから拾う)。
   const mat = {};
   const single = {};
-  const src = obj.mat && obj.single ? obj : null;
-  if (src) {
-    for (const slot of MAT_SLOTS) mat[slot] = src.mat[slot] || "";
-    for (const key of SINGLE_KEYS) single[key] = src.single[key] || "";
-  } else {
-    // フラット形式(slotId をトップレベルに持つ)。
-    for (const slot of MAT_SLOTS) mat[slot] = obj[slot] || "";
-    for (const key of SINGLE_KEYS) single[key] = obj[key] || "";
-  }
+  for (const key of SINGLE_KEYS) single[key] = obj[key] || "";
+  for (const slot of matSlotsOf(SINGLE_KEYS)) mat[slot] = obj[slot] || "";
   return normalizeLayout({ mat, single });
 }
 
@@ -75,6 +78,8 @@ export function saveLocal(data) {
       weights: data.weights,
       lockSingle: !!data.lockSingle,
       keyCodes: data.keyCodes || null,
+      yoonSplit: !!data.yoonSplit,
+      yoonStash: data.yoonStash || null,
     }));
   } catch (_) { /* localStorage 不可時は無視 */ }
 }
@@ -90,6 +95,8 @@ export function loadLocal() {
       weights: obj.weights || null,
       lockSingle: !!obj.lockSingle,
       keyCodes: obj.keyCodes || null,
+      yoonSplit: !!obj.yoonSplit,
+      yoonStash: obj.yoonStash || null,
     };
   } catch (_) {
     return null;
